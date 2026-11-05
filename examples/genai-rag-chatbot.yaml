@@ -1,0 +1,130 @@
+# Example: internal GenAI assistant (RAG) on EKS calling Amazon Bedrock.
+# Matches the worked example in the threat modeling guide.
+
+app:
+  name: Employee GenAI Assistant
+  description: >
+    Internal chatbot that answers employee questions using company policy and procedure documents.
+    Runs on a shared EKS cluster and calls Amazon Bedrock through a VPC endpoint.
+  owner: Digital Workplace team
+  stage: design
+  criticality: medium
+  users: [employees, admins]
+  regulatory: [glba]
+  controls: [sso, audit_logging, logging_siem]
+
+zones:
+  - id: corp
+    name: Corporate network
+  - id: app-vpc
+    name: Application VPC (EKS)
+  - id: aws-managed
+    name: AWS managed services
+
+components:
+  - id: employee
+    name: Employee
+    type: user
+    zone: corp
+
+  - id: alb
+    name: Internal load balancer
+    type: load_balancer
+    zone: app-vpc
+    controls: [sso, mfa, tls]
+
+  - id: chatbot-api
+    name: Chatbot API
+    type: container_workload
+    platform: eks
+    zone: app-vpc
+    data: [internal, confidential]
+    controls: [workload_identity, image_scanning, admission_control, non_root, network_policy]
+
+  - id: bedrock
+    name: Amazon Bedrock (Claude)
+    type: llm
+    zone: aws-managed
+    ai:
+      rag: true
+      agent_actions: false
+      untrusted_content: false
+      decision_support: false
+    controls: [private_endpoint, guardrails, model_allowlist, invocation_logging]
+
+  - id: knowledge-base
+    name: Bedrock Knowledge Base
+    type: vector_store
+    zone: aws-managed
+    data: [internal, confidential]
+    controls: [private_endpoint]
+
+  - id: docs-bucket
+    name: Policy documents (S3)
+    type: object_storage
+    zone: aws-managed
+    data: [internal, confidential]
+    controls: [public_access_block, encryption_cmk]
+
+  - id: logs
+    name: Invocation logs (CloudWatch → SIEM)
+    type: logging
+    zone: aws-managed
+    data: [confidential]
+
+  - id: pipeline
+    name: GitHub Actions pipeline
+    type: ci_cd
+    zone: corp
+    controls: [branch_protection, deploy_approvals, secrets_scanning]
+
+flows:
+  - id: F1
+    from: employee
+    to: alb
+    protocol: HTTPS
+    data: [internal]
+    encrypted: true
+    authenticated: true
+  - id: F2
+    from: alb
+    to: chatbot-api
+    protocol: HTTPS
+    data: [internal]
+    encrypted: true
+    authenticated: true
+  - id: F3
+    from: chatbot-api
+    to: bedrock
+    protocol: HTTPS (VPC endpoint)
+    data: [internal, confidential]
+    encrypted: true
+    authenticated: true
+  - id: F4
+    from: bedrock
+    to: knowledge-base
+    protocol: Retrieval
+    data: [confidential]
+    encrypted: true
+    authenticated: true
+  - id: F5
+    from: docs-bucket
+    to: knowledge-base
+    protocol: Ingestion sync
+    data: [confidential]
+    encrypted: true
+    authenticated: true
+  - id: F6
+    from: bedrock
+    to: logs
+    protocol: Invocation logging
+    data: [confidential]
+    encrypted: true
+    authenticated: true
+  - id: F7
+    from: pipeline
+    to: chatbot-api
+    protocol: Deploy
+    data: []
+    encrypted: true
+    authenticated: true

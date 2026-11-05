@@ -1,0 +1,757 @@
+# Threat library: each rule describes a threat, when it applies, and which controls mitigate it.
+#
+# applies_to: component | flow | app
+# types:      component types the rule applies to (component rules only)
+# when:       extra conditions; all must be true (see README "Writing rules")
+# mitigated_by: controls that reduce likelihood. All present = Mitigated, some = Partially mitigated.
+# mitigation_mode: any  -> any one listed control fully mitigates (default: all are needed).
+# likelihood / impact: base scores 1-5, adjusted by the engine (internet exposure, data sensitivity, controls).
+
+rules:
+
+  # ---------------------------------------------------------------- Identity
+  - id: ID-01
+    title: Weak or missing user authentication
+    stride: [S]
+    applies_to: component
+    types: [web_app, api, api_gateway, load_balancer, saas]
+    when:
+      receives_from_types: [user]
+    description: >
+      Users reach this entry point. Without strong authentication, an attacker can impersonate a
+      user with stolen or guessed credentials.
+    mitigated_by: [sso, mfa]
+    likelihood: 3
+    impact: 4
+    references: ["MITRE ATT&CK T1078 Valid Accounts", "NIST CSF PR.AA"]
+    questions:
+      - How do users authenticate (SSO / IdP)? Is MFA enforced?
+
+  - id: ID-02
+    title: Privileged / admin access without strong controls
+    stride: [S, E]
+    applies_to: app
+    when:
+      app_users_any: [admins]
+    description: >
+      Administrators or support staff have elevated access. Compromise of one admin account can
+      expose the whole application and its data.
+    mitigated_by: [mfa, privileged_access_management]
+    likelihood: 3
+    impact: 5
+    references: ["MITRE ATT&CK T1078.004 Cloud Accounts"]
+    questions:
+      - Who has admin or production access, and is it just-in-time and logged?
+
+  - id: ID-03
+    title: Long-lived static credentials in workloads
+    stride: [S, I]
+    applies_to: component
+    types: [web_app, api, container_workload, serverless_function, vm, ai_agent]
+    description: >
+      Workloads that use static keys or passwords can have them leaked through code, images, logs,
+      or environment variables, and the keys keep working until someone rotates them.
+    mitigated_by: [workload_identity, secrets_manager]
+    likelihood: 3
+    impact: 4
+    references: ["MITRE ATT&CK T1552 Unsecured Credentials"]
+    questions:
+      - How does this workload authenticate to cloud services and databases?
+
+  - id: ID-04
+    title: Over-privileged workload identity
+    stride: [E]
+    applies_to: component
+    types: [web_app, api, container_workload, serverless_function, vm, ai_agent]
+    description: >
+      If the workload's role has broader permissions than it needs, any compromise of the workload
+      becomes a compromise of everything that role can reach.
+    mitigated_by: [least_privilege_iam]
+    likelihood: 3
+    impact: 4
+    references: ["MITRE ATT&CK T1078.004 Cloud Accounts"]
+    questions:
+      - What exactly can this workload's IAM role / managed identity do?
+
+  - id: ID-05
+    title: Broken object-level authorization
+    stride: [E, I]
+    applies_to: component
+    types: [web_app, api, api_gateway]
+    when:
+      sensitive_data: true
+    description: >
+      Users may be able to read or change records that belong to other users by changing an ID in
+      a request (a top API risk).
+    mitigated_by: [authz_checks]
+    likelihood: 3
+    impact: 4
+    references: ["OWASP API Security Top 10: API1 Broken Object Level Authorization"]
+    questions:
+      - Is every request checked against the caller's right to that specific record?
+
+  # ---------------------------------------------------------------- Network
+  - id: NW-01
+    title: Exploitation of internet-facing component
+    stride: [T, E]
+    applies_to: component
+    when:
+      attrs: {internet_facing: true}
+    description: >
+      Internet-facing components are continuously scanned and attacked. Unpatched vulnerabilities
+      or injection flaws can give an attacker a foothold.
+    mitigated_by: [waf, vuln_scanning, patching]
+    likelihood: 4
+    impact: 4
+    references: ["MITRE ATT&CK T1190 Exploit Public-Facing Application"]
+    questions:
+      - Does this component need to be internet-facing? What sits in front of it?
+
+  - id: NW-02
+    title: Denial of service on internet-facing component
+    stride: [D]
+    applies_to: component
+    when:
+      attrs: {internet_facing: true}
+    description: Traffic floods or abusive clients can make the service unavailable.
+    mitigated_by: [rate_limiting, waf, autoscaling]
+    likelihood: 3
+    impact: 3
+    references: ["MITRE ATT&CK T1498 Network Denial of Service"]
+    questions:
+      - What availability is required, and what rate limits exist?
+
+  - id: NW-03
+    title: Data store reachable from public networks
+    stride: [I]
+    applies_to: component
+    types: [database, object_storage, vector_store, secrets_store, queue, llm]
+    description: >
+      Managed data and AI services often have public endpoints by default. A misconfigured policy
+      can expose data to the internet.
+    mitigated_by: [private_endpoint, public_access_block]
+    mitigation_mode: any   # any one of these controls is enough
+    likelihood: 3
+    impact: 5
+    references: ["MITRE ATT&CK T1530 Data from Cloud Storage"]
+    questions:
+      - Is public network access disabled? Is it only reachable through private endpoints?
+
+  - id: NW-04
+    title: Uncontrolled outbound traffic enables data exfiltration
+    stride: [I]
+    applies_to: component
+    types: [web_app, api, container_workload, serverless_function, vm, ai_agent]
+    when:
+      sensitive_data: true
+    description: >
+      If the workload can reach any destination on the internet, an attacker who compromises it can
+      send sensitive data out or download tools.
+    mitigated_by: [egress_control]
+    likelihood: 2
+    impact: 4
+    references: ["MITRE ATT&CK T1041 Exfiltration Over C2 Channel"]
+    questions:
+      - Which external destinations does this workload actually need to reach?
+
+  - id: NW-05
+    title: Lateral movement between workloads
+    stride: [E]
+    applies_to: component
+    types: [container_workload, vm]
+    description: >
+      Without segmentation, a compromised workload can reach other services and data in the same
+      network or cluster.
+    mitigated_by: [network_policy, segmentation]
+    mitigation_mode: any   # any one of these controls is enough
+    likelihood: 3
+    impact: 3
+    references: ["MITRE ATT&CK TA0008 Lateral Movement"]
+    questions:
+      - Which other services can this workload reach on the network?
+
+  # ---------------------------------------------------------------- Data flows
+  - id: FL-01
+    title: Unencrypted data flow
+    stride: [I, T]
+    applies_to: flow
+    when:
+      attrs: {encrypted: false}
+    description: Data on this flow can be read or modified by anyone positioned on the network path.
+    mitigated_by: [tls, mtls]
+    mitigation_mode: any   # any one of these controls is enough
+    likelihood: 3
+    impact: 4
+    references: ["MITRE ATT&CK T1557 Adversary-in-the-Middle"]
+    questions:
+      - Can this flow use TLS 1.2+ end to end?
+
+  - id: FL-02
+    title: Unauthenticated flow across a trust boundary
+    stride: [S]
+    applies_to: flow
+    when:
+      crosses_boundary: true
+      attrs: {authenticated: false}
+      exclude_from_types: [user]   # user authentication is covered by ID-01
+    description: >
+      The receiving side can't verify who is calling across this trust boundary, so an attacker
+      can send requests pretending to be a legitimate caller.
+    mitigated_by: [mtls, service_auth]
+    mitigation_mode: any   # any one of these controls is enough
+    likelihood: 3
+    impact: 4
+    references: ["NIST SP 800-207 Zero Trust Architecture"]
+    questions:
+      - How does the receiver authenticate the caller on this flow?
+
+  - id: FL-03
+    title: Sensitive data sent to a third party
+    stride: [I]
+    applies_to: flow
+    when:
+      sensitive_data: true
+      to_types: [external_system, saas]
+    description: >
+      Sensitive data leaves our environment for a vendor. We depend on the vendor's controls and
+      contract for its protection.
+    mitigated_by: [vendor_risk_assessment, data_minimization, tokenization]
+    likelihood: 2
+    impact: 4
+    references: ["Interagency Guidance on Third-Party Relationships: Risk Management (2023)"]
+    questions:
+      - Has the vendor been through third-party risk review? Can less data be sent?
+
+  # ---------------------------------------------------------------- Data at rest
+  - id: DA-01
+    title: Highly sensitive data without customer-managed key encryption
+    stride: [I]
+    applies_to: component
+    types: [database, object_storage, vector_store, queue]
+    when:
+      data_any: [restricted, pci, customer_pii, credentials]
+    description: >
+      Provider-managed encryption protects against physical theft, but customer-managed keys add
+      separation of duties and the ability to revoke access to the data.
+    mitigated_by: [encryption_cmk]
+    likelihood: 2
+    impact: 4
+    references: ["PCI DSS v4.0 Requirement 3"]
+    questions:
+      - Is this store encrypted with a customer-managed key? Who can use the key?
+
+  - id: DA-02
+    title: Unknown sensitive data in storage
+    stride: [I]
+    applies_to: component
+    types: [database, object_storage, vector_store]
+    description: >
+      Teams often store more sensitive data than they realize (e.g. PII in documents or exports).
+      Without scanning, it isn't protected or classified correctly.
+    mitigated_by: [data_classification_scanning]
+    likelihood: 3
+    impact: 4
+    references: ["Amazon Macie / Microsoft Purview / GCP Sensitive Data Protection"]
+    questions:
+      - Is this store scanned for sensitive data?
+
+  - id: DA-03
+    title: Data destruction or ransomware
+    stride: [T, D]
+    applies_to: component
+    types: [database, object_storage]
+    description: >
+      An attacker or mistake could delete or encrypt the data. Without protected backups, recovery
+      may be impossible.
+    mitigated_by: [backups, object_lock]
+    likelihood: 2
+    impact: 4
+    references: ["MITRE ATT&CK T1485 Data Destruction"]
+    questions:
+      - Are backups isolated from the production account and tested?
+
+  - id: DA-04
+    title: Sensitive data written to logs
+    stride: [I]
+    applies_to: component
+    types: [logging]
+    description: >
+      Logs often capture request bodies, tokens, or AI prompts. They are usually readable by more
+      people than the source data.
+    mitigated_by: [log_redaction, restricted_log_access]
+    likelihood: 3
+    impact: 3
+    references: ["OWASP Logging Cheat Sheet"]
+    questions:
+      - What sensitive fields can end up in logs, and who can read them?
+
+  # ---------------------------------------------------------------- Containers
+  - id: CT-01
+    title: Vulnerable container images
+    stride: [T, E]
+    applies_to: component
+    types: [container_workload]
+    description: >
+      Images built on outdated or bloated base images carry exploitable CVEs into production.
+    mitigated_by: [image_scanning, patching]
+    likelihood: 4
+    impact: 3
+    references: ["CIS Kubernetes Benchmark", "NIST SP 800-190"]
+    questions:
+      - Which base images are used, and does the pipeline fail on critical CVEs?
+
+  - id: CT-02
+    title: Untrusted or tampered container images
+    stride: [T]
+    applies_to: component
+    types: [container_workload]
+    description: >
+      Without signing and admission checks, an attacker or mistake can deploy an image that didn't
+      come from the approved pipeline.
+    mitigated_by: [image_signing, admission_control]
+    likelihood: 2
+    impact: 4
+    references: ["MITRE ATT&CK T1195 Supply Chain Compromise", "SLSA"]
+    questions:
+      - Can only signed images from approved registries run?
+
+  - id: CT-03
+    title: Container escape via privileged or root containers
+    stride: [E]
+    applies_to: component
+    types: [container_workload]
+    description: >
+      Privileged or root containers make it much easier to break out to the node and reach other
+      workloads and credentials.
+    mitigated_by: [admission_control, non_root]
+    likelihood: 2
+    impact: 5
+    references: ["MITRE ATT&CK T1611 Escape to Host"]
+    questions:
+      - Are privileged and root containers blocked at admission?
+
+  - id: CT-04
+    title: Node credential theft through the instance metadata service
+    stride: [E, I]
+    applies_to: component
+    types: [container_workload]
+    when:
+      attrs: {platform: eks}
+    description: >
+      A compromised pod that can reach the EC2 metadata service can steal the node's IAM role,
+      which usually has more access than the pod.
+    mitigated_by: [imds_v2, workload_identity]
+    likelihood: 3
+    impact: 4
+    references: ["MITRE ATT&CK T1552.005 Cloud Instance Metadata API"]
+    questions:
+      - Is IMDSv2 enforced with a hop limit of 1? Do pods use Pod Identity / IRSA?
+
+  - id: CT-05
+    title: Malicious activity in running containers goes undetected
+    stride: [R, T]
+    applies_to: component
+    types: [container_workload]
+    description: >
+      Crypto-miners, shells, and unexpected processes in containers go unnoticed without runtime
+      monitoring.
+    mitigated_by: [runtime_detection]
+    likelihood: 3
+    impact: 3
+    references: ["MITRE ATT&CK T1496 Resource Hijacking"]
+    questions:
+      - What runtime detection covers this cluster (Falco, GuardDuty, Defender, Wiz Sensor)?
+
+  # ---------------------------------------------------------------- Serverless / compute
+  - id: SL-01
+    title: Event injection into serverless function
+    stride: [T, E]
+    applies_to: component
+    types: [serverless_function]
+    description: >
+      Functions triggered by events (queues, storage, HTTP) may trust event data. Malicious input
+      can lead to injection or abuse of the function's permissions.
+    mitigated_by: [input_validation, least_privilege_iam]
+    likelihood: 3
+    impact: 3
+    references: ["OWASP Serverless Top 10"]
+    questions:
+      - Which event sources trigger this function, and is the input validated?
+
+  - id: DB-01
+    title: Injection into database queries
+    stride: [T, I]
+    applies_to: component
+    types: [web_app, api, container_workload, serverless_function, vm]
+    when:
+      sends_to_types: [database]
+    description: >
+      If queries are built from user input, an attacker can read or modify data they shouldn't.
+    mitigated_by: [parameterized_queries, input_validation]
+    likelihood: 3
+    impact: 5
+    references: ["OWASP Top 10 A03 Injection", "MITRE ATT&CK T1190"]
+    questions:
+      - Are all queries parameterized or built through an ORM?
+
+  - id: QU-01
+    title: Message injection or tampering in queue
+    stride: [T]
+    applies_to: component
+    types: [queue]
+    description: >
+      Anyone who can publish to the queue can send messages that downstream consumers will trust.
+    mitigated_by: [least_privilege_iam, message_validation]
+    likelihood: 2
+    impact: 3
+    references: []
+    questions:
+      - Who can publish to this queue, and do consumers validate messages?
+
+  # ---------------------------------------------------------------- CI/CD & secrets
+  - id: CI-01
+    title: Pipeline compromise or unauthorized deployment
+    stride: [T, E]
+    applies_to: component
+    types: [ci_cd]
+    description: >
+      The pipeline can change production. A compromised pipeline, developer account, or workflow
+      can push malicious code or infrastructure changes.
+    mitigated_by: [branch_protection, deploy_approvals, least_privilege_iam]
+    likelihood: 3
+    impact: 5
+    references: ["MITRE ATT&CK T1195 Supply Chain Compromise", "OWASP Top 10 CI/CD Security Risks"]
+    questions:
+      - Who can merge and deploy to production? Are approvals required?
+
+  - id: CI-02
+    title: Infrastructure misconfiguration reaches production
+    stride: [T, I]
+    applies_to: component
+    types: [ci_cd]
+    description: >
+      Without IaC scanning, insecure Terraform (public buckets, open security groups) is deployed
+      and only found later by CSPM, if at all.
+    mitigated_by: [iac_scanning]
+    likelihood: 3
+    impact: 3
+    references: ["Checkov / Wiz Code / Trivy config"]
+    questions:
+      - Is Terraform scanned in the pipeline, and can it block a deploy?
+
+  - id: SE-01
+    title: Secrets committed to code or configuration
+    stride: [I]
+    applies_to: component
+    types: [ci_cd]
+    description: >
+      Keys and passwords committed to repositories or pipeline configs are a common source of
+      breaches.
+    mitigated_by: [secrets_scanning]
+    likelihood: 3
+    impact: 4
+    references: ["MITRE ATT&CK T1552.001 Credentials In Files"]
+    questions:
+      - Are repos and pipelines scanned for secrets?
+
+  # ---------------------------------------------------------------- Logging
+  - id: LG-01
+    title: Insufficient audit logging
+    stride: [R]
+    applies_to: app
+    description: >
+      Without audit logs in the SIEM, malicious or mistaken actions can't be detected,
+      investigated, or attributed.
+    mitigated_by: [audit_logging, logging_siem]
+    likelihood: 3
+    impact: 3
+    references: ["NIST CSF DE.CM", "PCI DSS v4.0 Requirement 10"]
+    questions:
+      - Which security events are logged, and are they sent to the SIEM?
+
+  - id: LG-02
+    title: Logs can be altered or disabled
+    stride: [R]
+    applies_to: component
+    types: [logging]
+    description: An attacker with enough access may delete logs or turn logging off to hide activity.
+    mitigated_by: [log_immutability, restricted_log_access]
+    likelihood: 2
+    impact: 3
+    references: ["MITRE ATT&CK T1562.008 Disable or Modify Cloud Logs"]
+    questions:
+      - Are logs stored in a separate account with write-once retention?
+
+  # ---------------------------------------------------------------- AI / LLM
+  - id: AI-01
+    title: Direct prompt injection and jailbreaks
+    stride: [T, E]
+    applies_to: component
+    types: [llm]
+    description: >
+      Users can craft prompts that override the system's instructions or safety rules.
+    mitigated_by: [guardrails, prompt_injection_filter]
+    likelihood: 4
+    impact: 3
+    references: ["OWASP LLM01:2025 Prompt Injection"]
+    questions:
+      - Which guardrails are enabled, and has the app been red-teamed?
+
+  - id: AI-02
+    title: Indirect prompt injection through retrieved content
+    stride: [T]
+    applies_to: component
+    types: [llm]
+    when:
+      attrs: {ai.rag: true}
+    description: >
+      Instructions hidden in documents, emails, or web pages that the model reads can change its
+      behavior. There is no complete fix; limit who can write content and what the model can do.
+    mitigated_by: [content_write_controls, prompt_injection_filter]
+    likelihood: 3
+    impact: 4
+    references: ["OWASP LLM01:2025 Prompt Injection"]
+    questions:
+      - Who can add or edit documents in the knowledge base?
+
+  - id: AI-03
+    title: Sensitive information disclosure through the model
+    stride: [I]
+    applies_to: component
+    types: [llm]
+    description: >
+      Prompts and responses can contain PII or confidential data, whether typed by users or pulled
+      in from retrieval.
+    mitigated_by: [pii_filter, dlp]
+    likelihood: 3
+    impact: 4
+    references: ["OWASP LLM02:2025 Sensitive Information Disclosure"]
+    questions:
+      - Are PII filters applied to prompts and responses?
+
+  - id: AI-04
+    title: Retrieval returns data the user isn't allowed to see
+    stride: [I]
+    applies_to: component
+    types: [vector_store]
+    description: >
+      If retrieval uses the application's access instead of the user's, any user can get answers
+      drawn from any document in the knowledge base.
+    mitigated_by: [permission_aware_retrieval]
+    likelihood: 3
+    impact: 4
+    references: ["OWASP LLM08:2025 Vector and Embedding Weaknesses"]
+    questions:
+      - Are retrieval results filtered by the requesting user's entitlements?
+
+  - id: AI-05
+    title: Excessive agency
+    stride: [E]
+    applies_to: component
+    types: [ai_agent, llm]
+    when:
+      attrs: {ai.agent_actions: true}
+    description: >
+      The AI can take actions (call APIs, change data, send messages). A manipulated or mistaken
+      model can do real damage with whatever tools and permissions it has.
+    mitigated_by: [least_privilege_tools, human_approval]
+    likelihood: 3
+    impact: 5
+    references: ["OWASP LLM06:2025 Excessive Agency"]
+    questions:
+      - What tools can the AI call, with what permissions? Which actions need human approval?
+
+  - id: AI-06
+    title: Model output trusted by downstream systems
+    stride: [T, E]
+    applies_to: component
+    types: [llm]
+    description: >
+      If model output is rendered in a browser or passed to code, SQL, or APIs without validation,
+      it can cause XSS, injection, or unintended actions.
+    mitigated_by: [output_validation]
+    likelihood: 3
+    impact: 3
+    references: ["OWASP LLM05:2025 Improper Output Handling"]
+    questions:
+      - Where does model output go, and is it encoded or validated first?
+
+  - id: AI-07
+    title: Unapproved or compromised models
+    stride: [T]
+    applies_to: component
+    types: [llm]
+    description: >
+      Using models that haven't gone through AI governance, or open models from untrusted sources,
+      brings unknown behavior and supply chain risk.
+    mitigated_by: [model_allowlist]
+    likelihood: 2
+    impact: 4
+    references: ["OWASP LLM03:2025 Supply Chain", "SR 11-7 Model Risk Management"]
+    questions:
+      - Is the model approved through AI governance? Is model use restricted to the approved list?
+
+  - id: AI-08
+    title: Unbounded consumption and cost abuse
+    stride: [D]
+    applies_to: component
+    types: [llm]
+    description: Heavy or abusive use can run up large costs or exhaust quotas for everyone.
+    mitigated_by: [token_quota, rate_limiting]
+    likelihood: 3
+    impact: 2
+    references: ["OWASP LLM10:2025 Unbounded Consumption"]
+    questions:
+      - Are there per-user rate limits and token quotas?
+
+  - id: AI-09
+    title: AI activity not logged for investigation
+    stride: [R]
+    applies_to: component
+    types: [llm, ai_agent]
+    description: >
+      Without invocation logging (or at least metadata and guardrail events) in the SIEM, misuse
+      and attacks against the AI can't be detected or investigated.
+    mitigated_by: [invocation_logging]
+    likelihood: 3
+    impact: 3
+    references: ["NIST AI RMF MEASURE / MANAGE"]
+    questions:
+      - Are prompts, responses, or at least metadata and guardrail events sent to the SIEM?
+
+  - id: AI-10
+    title: Inaccurate output used for decisions
+    stride: [T]
+    applies_to: component
+    types: [llm]
+    when:
+      attrs: {ai.decision_support: true}
+    description: >
+      Hallucinated or wrong output that informs decisions about customers or money can cause harm
+      and regulatory issues.
+    mitigated_by: [human_review, grounding_checks]
+    likelihood: 3
+    impact: 4
+    references: ["OWASP LLM09:2025 Misinformation", "SR 11-7 Model Risk Management"]
+    questions:
+      - Does a human review AI output before it affects a customer or financial decision?
+
+  - id: AI-11
+    title: System prompt leakage
+    stride: [I]
+    applies_to: component
+    types: [llm]
+    description: >
+      Attackers can often extract the system prompt. Secrets or access rules placed in it will be
+      exposed.
+    mitigated_by: [no_secrets_in_prompts]
+    likelihood: 3
+    impact: 2
+    references: ["OWASP LLM07:2025 System Prompt Leakage"]
+    questions:
+      - Does the system prompt contain any secrets, keys, or authorization logic?
+
+  - id: AI-12
+    title: Untrusted tools or MCP servers connected to the agent
+    stride: [T, E]
+    applies_to: component
+    types: [ai_agent]
+    description: >
+      Third-party tools or MCP servers can contain malicious tool descriptions or over-broad
+      access, turning the agent against us.
+    mitigated_by: [tool_allowlist]
+    likelihood: 3
+    impact: 4
+    references: ["OWASP LLM03:2025 Supply Chain", "OWASP LLM06:2025 Excessive Agency"]
+    questions:
+      - Which tools / MCP servers can the agent use, and who approved them?
+
+  - id: AI-13
+    title: Agent can be tricked into exfiltrating data ("lethal trifecta")
+    stride: [I]
+    applies_to: component
+    types: [ai_agent, llm]
+    when:
+      attrs: {ai.agent_actions: true, ai.untrusted_content: true}
+      sensitive_data: true
+    description: >
+      The AI has access to private data, reads untrusted content, and can take actions that send
+      data out. Injected instructions can make it leak data. Break at least one of the three.
+    mitigated_by: [egress_control, human_approval]
+    mitigation_mode: any   # any one of these controls is enough
+    likelihood: 3
+    impact: 5
+    references: ["OWASP LLM01:2025 Prompt Injection", "OWASP LLM06:2025 Excessive Agency"]
+    questions:
+      - Can the AI send data anywhere (email, web requests, links)? Can that be removed?
+
+  # ---------------------------------------------------------------- Third parties
+  - id: TP-01
+    title: Vendor or SaaS handling sensitive data
+    stride: [I]
+    applies_to: component
+    types: [saas, external_system]
+    when:
+      sensitive_data: true
+    description: >
+      A vendor stores or processes our sensitive data. A breach on their side is a breach of our
+      customers' data.
+    mitigated_by: [vendor_risk_assessment]
+    likelihood: 2
+    impact: 4
+    references: ["Interagency Guidance on Third-Party Relationships: Risk Management (2023)"]
+    questions:
+      - Has third-party risk management reviewed this vendor? What do the contract terms say about data?
+
+  # ---------------------------------------------------------------- PCI
+  - id: PC-01
+    title: Cardholder data environment not segmented
+    stride: [I, E]
+    applies_to: component
+    types: [web_app, api, api_gateway, load_balancer, container_workload, serverless_function, vm,
+            database, object_storage, queue, vector_store, llm, ai_agent, logging]
+    when:
+      data_any: [pci]
+    description: >
+      Components handling card data must be segmented. Otherwise everything connected comes into
+      PCI scope, and a compromise elsewhere can reach card data.
+    mitigated_by: [segmentation, tokenization]
+    mitigation_mode: any   # any one of these controls is enough
+    likelihood: 3
+    impact: 5
+    references: ["PCI DSS v4.0 Requirement 1"]
+    questions:
+      - Is this component in a dedicated, segmented PCI environment? Can card data be tokenized?
+
+  - id: PC-02
+    title: Card data captured in AI prompts or logs
+    stride: [I]
+    applies_to: component
+    types: [llm, logging]
+    when:
+      app_regulatory_any: [pci]
+    description: >
+      If card numbers reach model prompts, transcripts, or logs, those systems come into PCI scope
+      and must meet all its controls.
+    mitigated_by: [pci_data_masking]
+    likelihood: 3
+    impact: 5
+    references: ["PCI DSS v4.0 Requirement 3"]
+    questions:
+      - How is card data kept out of prompts, transcripts, and logs?
+
+  # ---------------------------------------------------------------- Availability
+  - id: AV-01
+    title: Single point of failure for a critical application
+    stride: [D]
+    applies_to: component
+    types: [web_app, api, container_workload, vm, database]
+    when:
+      app_criticality_any: [high]
+    description: A critical application depends on a component that may not survive a zone failure.
+    mitigated_by: [multi_az]
+    likelihood: 2
+    impact: 4
+    references: ["FFIEC Business Continuity Management"]
+    questions:
+      - Is this component deployed across multiple availability zones? What are the RTO/RPO?

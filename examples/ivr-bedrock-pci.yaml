@@ -1,0 +1,141 @@
+# Example: customer IVR (voice) using Amazon Bedrock, in PCI scope.
+# Deliberately incomplete in places so the report shows open questions and gaps.
+
+app:
+  name: Contact Center IVR Assistant
+  description: >
+    Customer-facing voice assistant for the contact center. Handles account questions and can take
+    card payments. Uses Bedrock to understand intent and look up account information.
+  owner: Contact Center Technology
+  stage: build
+  criticality: high
+  users: [customers, admins]
+  regulatory: [pci, glba]
+  controls: [audit_logging, logging_siem]
+
+zones:
+  - id: internet
+    name: Public telephone network / Internet
+  - id: pci
+    name: PCI segment (dedicated AWS account)
+  - id: app
+    name: Application account
+  - id: aws-managed
+    name: AWS managed services
+
+components:
+  - id: caller
+    name: Customer (caller)
+    type: user
+    zone: internet
+
+  - id: contact-center
+    name: Contact center platform
+    type: saas
+    zone: pci
+    internet_facing: true
+    data: [customer_pii, pci]
+    controls: [vendor_risk_assessment, segmentation]
+
+  - id: ivr-orchestrator
+    name: IVR orchestrator (Lambda)
+    type: serverless_function
+    zone: pci
+    data: [customer_pii, pci]
+    controls: [least_privilege_iam, segmentation]
+
+  - id: bedrock
+    name: Amazon Bedrock
+    type: llm
+    zone: aws-managed
+    ai:
+      rag: false
+      agent_actions: true
+      decision_support: false
+    controls: [guardrails, model_allowlist, invocation_logging, private_endpoint]
+
+  - id: account-api
+    name: Account lookup API
+    type: api
+    zone: app
+    data: [customer_pii]
+    controls: [service_auth]
+
+  - id: core-banking
+    name: Core banking system
+    type: external_system
+    zone: app
+    data: [customer_pii]
+
+  - id: payment-gateway
+    name: Payment processor
+    type: external_system
+    zone: internet
+    data: [pci]
+
+  - id: transcripts
+    name: Call transcripts (S3)
+    type: object_storage
+    zone: app
+
+  - id: logs
+    name: Logs (CloudWatch → SIEM)
+    type: logging
+    zone: aws-managed
+    data: [customer_pii]
+
+flows:
+  - id: F1
+    from: caller
+    to: contact-center
+    protocol: Voice / DTMF
+    data: [customer_pii, pci]
+    encrypted: true
+    authenticated: false
+  - id: F2
+    from: contact-center
+    to: ivr-orchestrator
+    protocol: AWS invoke
+    data: [customer_pii, pci]
+    encrypted: true
+    authenticated: true
+  - id: F3
+    from: ivr-orchestrator
+    to: bedrock
+    protocol: HTTPS
+    data: [customer_pii]
+    encrypted: true
+    authenticated: true
+  - id: F4
+    from: ivr-orchestrator
+    to: account-api
+    protocol: HTTPS
+    data: [customer_pii]
+    encrypted: true
+  - id: F5
+    from: account-api
+    to: core-banking
+    protocol: MQ
+    data: [customer_pii]
+    encrypted: false
+    authenticated: true
+  - id: F6
+    from: ivr-orchestrator
+    to: payment-gateway
+    protocol: HTTPS
+    data: [pci]
+    encrypted: true
+    authenticated: true
+  - id: F7
+    from: contact-center
+    to: transcripts
+    protocol: Export
+    encrypted: true
+    authenticated: true
+  - id: F8
+    from: ivr-orchestrator
+    to: logs
+    protocol: CloudWatch
+    data: [customer_pii]
+    encrypted: true
+    authenticated: true

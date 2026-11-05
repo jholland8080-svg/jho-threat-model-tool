@@ -1,0 +1,87 @@
+# Threat model intake
+# Fill this in with the app team, then run: python -m tmtool analyze <this file>
+# Lists of valid values: python -m tmtool types | data | controls
+
+app:
+  name: My Application
+  description: What the app does and for whom.
+  owner: App team name / contact
+  stage: design                  # idea | design | build | pre-prod | production
+  criticality: medium            # low | medium | high
+  users: [employees]             # employees | customers | partners | admins
+  regulatory: []                 # pci | glba | sox | nydfs | sr11-7 | hipaa | gdpr
+  controls: []                   # controls that apply to everything, e.g. [sso, logging_siem, audit_logging]
+
+# Trust zones. Flows between different zones are trust boundary crossings.
+zones:
+  - id: internet
+    name: Internet
+  - id: corp
+    name: Corporate network
+  - id: app
+    name: Application VPC / VNet
+  - id: cloud-managed
+    name: Cloud provider managed services
+
+# Every part of the system. Required: id, type. Recommended: zone, data, controls.
+components:
+  - id: users
+    name: Users
+    type: user
+    zone: corp
+
+  - id: web
+    name: Web application
+    type: web_app                # see: python -m tmtool types
+    zone: app
+    internet_facing: false
+    data: [internal]             # see: python -m tmtool data
+    controls: [sso]              # see: python -m tmtool controls
+
+  - id: db
+    name: Application database
+    type: database
+    zone: app
+    data: [confidential]
+    controls: [private_endpoint]
+
+  # AI components: describe what the AI can do. Each flag changes which threats apply.
+  # - id: model
+  #   name: Hosted LLM
+  #   type: llm
+  #   zone: cloud-managed
+  #   ai:
+  #     rag: true                # retrieves company documents
+  #     agent_actions: false     # can call tools / take actions
+  #     untrusted_content: false # reads emails, web pages, uploads
+  #     decision_support: false  # informs customer or financial decisions
+  #   controls: [guardrails, model_allowlist]
+
+  - id: pipeline
+    name: CI/CD pipeline
+    type: ci_cd
+    zone: corp
+    controls: [branch_protection]
+
+# How data moves. One entry per arrow on the diagram.
+flows:
+  - from: users
+    to: web
+    protocol: HTTPS
+    data: [internal]
+    encrypted: true              # true | false (leave out if unknown: it becomes a question)
+    authenticated: true          # true | false
+
+  - from: web
+    to: db
+    protocol: PostgreSQL/TLS
+    data: [confidential]
+    encrypted: true
+    authenticated: true
+
+  - from: pipeline
+    to: web
+    protocol: Deploy
+    data: []
+    encrypted: true
+    authenticated: true
