@@ -4,6 +4,7 @@ Rule-based threat modeling for cloud and AI architectures. Describe an app team'
 
 - Threats from a library of **47 rules**: STRIDE, cloud identity and network threats, containers (EKS/AKS/OpenShift), CI/CD, data protection, PCI, and the **OWASP Top 10 for LLM Applications (2025)**, including RAG and AI agents
 - **Risk scoring** (likelihood × impact) adjusted for internet exposure, data sensitivity, app criticality, and the controls already in place
+- **Inherited platform controls**: guardrails your cloud platforms already enforce (SCPs, admission policies, gateways) are credited automatically, so app teams aren't asked to re-solve risks the platform already handles, and the report shows the risk with and without them
 - A **data flow diagram** (Mermaid, renders on GitHub) with trust boundaries
 - **Go-live blockers**, recommended mitigations, and **questions for the app team** about what the intake didn't cover
 - A **backlog CSV** to import findings as tickets
@@ -11,7 +12,7 @@ Rule-based threat modeling for cloud and AI architectures. Describe an app team'
 
 No API keys and no external calls: the same input always gives the same output, and architecture details never leave your machine.
 
-**Example reports:** [GenAI RAG chatbot on EKS + Bedrock](examples/reports/genai-rag-chatbot-threat-model.md) · [Customer IVR on Bedrock (PCI)](examples/reports/ivr-bedrock-pci-threat-model.md)
+**Example reports:** [GenAI RAG chatbot on EKS + Bedrock, with inherited platform controls](examples/reports/genai-rag-chatbot-threat-model.md) · [Customer IVR on Bedrock (PCI)](examples/reports/ivr-bedrock-pci-threat-model.md)
 
 ---
 
@@ -35,15 +36,17 @@ Model a new architecture:
 python -m tmtool init intake/my-app.yaml        # copy the template
 # ...fill it in with the app team...
 python -m tmtool validate intake/my-app.yaml    # check for errors and typos
-python -m tmtool analyze intake/my-app.yaml --csv reports/my-app-backlog.csv
+python -m tmtool analyze intake/my-app.yaml --csv reports/my-app-backlog.csv \
+    --platforms platforms/example-baseline.yaml   # controls inherited from your cloud platforms
 ```
 
 ## Commands
 
 | Command | What it does |
 |---|---|
-| `analyze INTAKE` | Generate the threat model report. Options: `-o` output path, `--csv` backlog file, `--min-rating` filter, `--fail-on RATING` (exit code 2 if open threats at or above it), `--library` extra rules |
-| `validate INTAKE` | Check the intake without generating a report |
+| `analyze INTAKE` | Generate the threat model report. Options: `-o` output path, `--csv` backlog file, `--min-rating` filter, `--fail-on RATING` (exit code 2 if open threats at or above it), `--library` extra rules, `--platforms` platform baseline |
+| `validate INTAKE` | Check the intake without generating a report (accepts `--platforms` to check platform references) |
+| `platforms BASELINE` | List the platforms in a baseline and the controls each provides |
 | `init [PATH]` | Create a new intake file from the template |
 | `rules` | List all threat rules |
 | `types` / `data` / `controls` | List valid component types, data classes, and controls |
@@ -54,18 +57,56 @@ Four sections. See [templates/intake-template.yaml](templates/intake-template.ya
 
 | Section | What goes in it |
 |---|---|
-| `app` | Name, description, owner, stage, **criticality** (low/medium/high), **users** (employees, customers, partners, admins), **regulatory** scope (pci, glba, sox, nydfs, sr11-7…), and app-wide **controls** |
+| `app` | Name, description, owner, stage, **criticality** (low/medium/high), **users** (employees, customers, partners, admins), **regulatory** scope (pci, glba, sox, nydfs, sr11-7…), app-wide **controls**, and the **platforms** the app builds on |
 | `zones` | Trust zones (internet, corporate network, app VPC, PCI segment, cloud-managed services…). Flows between zones are **trust boundary crossings** |
-| `components` | Each part of the system: `id`, `type`, `zone`, `internet_facing`, `data` classifications, `controls` in place, `platform` (e.g. `eks`), and for AI components an `ai` block (`rag`, `agent_actions`, `untrusted_content`, `decision_support`) |
+| `components` | Each part of the system: `id`, `type`, `zone`, `internet_facing`, `data` classifications, `controls` the app team implements, `platform` it runs on (e.g. `eks`, or `none`), approved `exceptions` to platform controls, and for AI components an `ai` block (`rag`, `agent_actions`, `untrusted_content`, `decision_support`) |
 | `flows` | Each data flow: `from`, `to`, `protocol`, `data`, `encrypted`, `authenticated`, flow-level `controls` |
 
 **Leave unknowns out** rather than guessing. Missing details (e.g. whether a flow is encrypted) become questions in the report.
+
+## Inherited platform controls
+
+Many risks are already handled by the cloud platforms an app is built on: SCPs block public S3 buckets, Kyverno rejects root containers, a GenAI gateway applies guardrails to every model call. App teams shouldn't have to claim those controls themselves, and the threat model shouldn't flag them as gaps.
+
+The **platform baseline** ([platforms/example-baseline.yaml](platforms/example-baseline.yaml)) describes what each platform enforces. The platform or cloud security team owns it, separately from app intakes:
+
+```yaml
+platforms:
+  - id: eks
+    name: Shared EKS Platform
+    owner: Container Platform team
+    inherits: [aws-lz]                 # also gets everything the landing zone provides
+    controls:
+      - control: non_root
+        types: [container_workload]    # which component types it covers (omit = all)
+        enforcement: preventive        # preventive | detective
+        mechanism: Kyverno rejects privileged pods and runAsNonRoot=false
+        evidence: Kyverno policy require-run-as-nonroot
+      - control: mtls
+        applies_to: [flow]             # component (default) | flow | app
+        enforcement: preventive
+        mechanism: Istio STRICT mTLS mesh-wide
+```
+
+How an app picks them up:
+
+- `app.platforms: [aws-lz]` applies a platform to every component the app hosts. Users, `saas`, and `external_system` components never inherit, and `platform: none` opts a component out (e.g. a GitHub-hosted pipeline).
+- A component's `platform: eks` adds that platform (and whatever it `inherits`) for that component.
+- **Flow** controls (like mesh mTLS) apply only when both ends of the flow are on the platform. **App** controls (like JIT admin access) satisfy only app-wide rules, so workforce MFA never counts as customer MFA.
+- `exceptions: [public_access_block]` on a component removes an inherited control the app has an approved exception for.
+
+How it changes the results:
+
+- **Preventive** inherited controls count like any other control. **Detective** ones (drift detected after the fact) reduce likelihood but can't fully mitigate a threat on their own; the report suggests making them preventive.
+- Every finding is scored **with and without** inheritance. The executive summary shows how many threats the platforms took off the board, the register marks status changes with *⬇ platform*, and a dedicated section lists each platform's controls with mechanism and evidence, ready for an auditor.
+
+The example baseline is illustrative. Replace it with your organization's actual guardrails.
 
 ## How scoring works
 
 1. Each rule has a base **likelihood** and **impact** (1–5).
 2. Adjustments: **+1 likelihood** if internet-facing · **+1 impact** for highly sensitive data (restricted, customer PII, PCI, credentials) · **±1 impact** for high/low app criticality.
-3. Controls: if all of the rule's mitigating controls are present, the threat is **Mitigated** (−2 likelihood); if some are, **Partially mitigated** (−1). Some rules accept **any one** control (e.g. private endpoint *or* public access blocked).
+3. Controls (the app team's plus inherited platform controls): if all of the rule's mitigating controls are present, the threat is **Mitigated** (−2 likelihood); if some are, **Partially mitigated** (−1). Some rules accept **any one** control (e.g. private endpoint *or* public access blocked). Coverage that relies on a detective-only platform control stays **Partially mitigated**.
 4. **Score = likelihood × impact.** Critical 20–25 · High 12–19 · Medium 6–11 · Low 1–5.
 
 Every finding shows which adjustments were applied, so the rating can be explained and challenged.
@@ -113,5 +154,5 @@ python -m unittest discover -s tests -v
 ## Limits
 
 - It finds threats that match known patterns. It doesn't replace a threat modeling conversation; it makes that conversation faster and more consistent.
-- Controls are as reported by the app team. Verify them (CSPM, config review, testing).
+- App team controls are self-reported. Verify them (CSPM, config review, testing). Inherited controls are only as good as the baseline, so keep it in sync with the guardrails actually deployed.
 - Ratings are a consistent starting point. Map them to your organization's risk rating scale.

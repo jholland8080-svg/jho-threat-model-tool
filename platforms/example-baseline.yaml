@@ -1,0 +1,161 @@
+# Platform baseline: controls that app teams INHERIT from the cloud platforms they build on.
+#
+# Owned by the platform / cloud security team, not the app team. Pass it to the tool with:
+#   python -m tmtool analyze intake.yaml --platforms platforms/example-baseline.yaml
+#
+# An app opts in by listing platforms in app.platforms (applies to the whole app) or a component's
+# `platform` field. A platform's `inherits` pulls in another platform's controls too.
+#
+# Each control entry:
+#   control:     a control from `python -m tmtool controls`
+#   types:       component types it covers (omit = every component on the platform)
+#   applies_to:  [component] (default), flow, app. Flow entries apply when BOTH ends are on the platform.
+#                App entries satisfy app-wide rules (e.g. admin access) only.
+#   enforcement: preventive = a guardrail blocks deploying without it (SCP, admission policy, org policy)
+#                detective  = drift is detected and remediated after the fact (Config rule, CSPM alert).
+#                Detective-only coverage reduces a threat but never fully mitigates it.
+#   mechanism:   how the platform enforces it
+#   evidence:    where an auditor or reviewer can verify it
+#
+# THIS IS AN EXAMPLE. Replace it with your organization's real platform guardrails.
+
+platforms:
+
+  - id: aws-lz
+    name: AWS Landing Zone
+    owner: Cloud Platform Engineering
+    description: Multi-account AWS organization (Control Tower) with SCPs, org-wide security services, and a log archive account.
+    controls:
+      - control: segmentation
+        enforcement: preventive
+        mechanism: Account per application and environment; prod and non-prod in separate OUs
+        evidence: AWS Organizations OU structure; account vending pipeline
+      - control: public_access_block
+        types: [object_storage]
+        enforcement: preventive
+        mechanism: Account-level S3 Block Public Access; SCP denies s3:PutAccountPublicAccessBlock
+        evidence: "SCP p-deny-s3-public; Wiz control 'S3 public access'"
+      - control: encryption_cmk
+        types: [object_storage, database, queue, vector_store]
+        enforcement: detective
+        mechanism: AWS Config conformance pack flags resources without a customer-managed KMS key; auto-ticketed
+        evidence: Config conformance pack 'data-protection'; Wiz CSPM
+      - control: imds_v2
+        types: [vm, container_workload]
+        enforcement: preventive
+        mechanism: SCP requires ec2:MetadataHttpTokens=required on RunInstances; hop limit 1 in golden AMI launch templates
+        evidence: SCP p-require-imdsv2
+      - control: runtime_detection
+        types: [vm, container_workload, serverless_function]
+        enforcement: preventive
+        mechanism: GuardDuty (incl. Runtime Monitoring) enabled org-wide by delegated admin; SCP denies disabling it
+        evidence: GuardDuty delegated admin console; SCP p-protect-security-services
+      - control: vuln_scanning
+        types: [vm, container_workload, serverless_function]
+        enforcement: detective
+        mechanism: Amazon Inspector and Wiz agentless scanning across all accounts
+        evidence: Wiz vulnerability dashboard
+      - control: model_allowlist
+        types: [llm, ai_agent]
+        enforcement: preventive
+        mechanism: SCP restricts bedrock:InvokeModel to AI-governance-approved model ARNs
+        evidence: SCP p-bedrock-approved-models; AI governance model register
+      - control: audit_logging
+        applies_to: [app]
+        enforcement: preventive
+        mechanism: Organization CloudTrail (management + data events) to the log archive account. Covers the cloud control plane, not application logs.
+        evidence: Org trail config; SCP p-protect-cloudtrail
+      - control: log_immutability
+        applies_to: [app]
+        enforcement: preventive
+        mechanism: Log archive bucket with S3 Object Lock (compliance mode) in a separate account
+        evidence: Log archive account bucket policy
+      - control: privileged_access_management
+        applies_to: [app]
+        enforcement: preventive
+        mechanism: Human prod access only through IAM Identity Center permission sets with JIT approval; IAM users denied by SCP
+        evidence: SCP p-deny-iam-users; JIT approval logs
+      - control: mfa
+        applies_to: [app]
+        enforcement: preventive
+        mechanism: IAM Identity Center requires MFA for all console and CLI sessions (workforce users, not app end users)
+        evidence: Identity Center MFA settings
+
+  - id: eks
+    name: Shared EKS Platform
+    owner: Container Platform team
+    description: Multi-tenant EKS clusters with Kyverno, Istio, and default-deny networking. Builds on the AWS Landing Zone.
+    inherits: [aws-lz]
+    controls:
+      - control: admission_control
+        types: [container_workload]
+        enforcement: preventive
+        mechanism: Kyverno policies in Enforce mode (Pod Security 'restricted' profile plus org policies)
+        evidence: Kyverno policy reports; cluster-policies repo
+      - control: non_root
+        types: [container_workload]
+        enforcement: preventive
+        mechanism: Kyverno rejects privileged pods and runAsNonRoot=false
+        evidence: Kyverno policy require-run-as-nonroot
+      - control: image_scanning
+        types: [container_workload]
+        enforcement: preventive
+        mechanism: Admission webhook blocks images with critical CVEs or no scan result
+        evidence: Kyverno policy block-critical-cves; Wiz image scanning
+      - control: image_signing
+        types: [container_workload]
+        enforcement: preventive
+        mechanism: Kyverno verifyImages requires a Cosign signature from the platform pipeline
+        evidence: Kyverno policy verify-image-signature
+      - control: network_policy
+        types: [container_workload]
+        enforcement: preventive
+        mechanism: Namespaces are created with default-deny ingress and egress NetworkPolicies
+        evidence: Namespace vending templates
+      - control: workload_identity
+        types: [container_workload]
+        enforcement: detective
+        mechanism: EKS Pod Identity is the standard; Wiz flags static AWS keys found in pods or images
+        evidence: Wiz secrets-in-workloads findings
+      - control: mtls
+        applies_to: [flow]
+        enforcement: preventive
+        mechanism: Istio STRICT mTLS PeerAuthentication mesh-wide
+        evidence: Istio mesh config
+      - control: tls
+        applies_to: [flow]
+        enforcement: preventive
+        mechanism: Istio STRICT mTLS (TLS 1.2+) between all in-mesh workloads
+        evidence: Istio mesh config
+
+  - id: genai-gateway
+    name: Enterprise GenAI Gateway
+    owner: AI Platform team
+    description: Central gateway that all LLM calls go through. Applies guardrails, quotas, and logging. Builds on the AWS Landing Zone.
+    inherits: [aws-lz]
+    controls:
+      - control: guardrails
+        types: [llm]
+        enforcement: preventive
+        mechanism: Gateway attaches the enterprise Bedrock Guardrail to every request; direct model access denied by SCP
+        evidence: Gateway config; SCP p-bedrock-gateway-only
+      - control: prompt_injection_filter
+        types: [llm]
+        enforcement: preventive
+        mechanism: Bedrock Guardrails prompt attack filter set to HIGH at the gateway
+        evidence: Enterprise guardrail definition
+      - control: token_quota
+        types: [llm]
+        enforcement: preventive
+        mechanism: Per-app token budgets enforced by the gateway
+        evidence: Gateway quota config
+      - control: invocation_logging
+        types: [llm]
+        enforcement: preventive
+        mechanism: Gateway logs request metadata and content to the SIEM
+        evidence: SIEM index genai-gateway
+      - control: model_allowlist
+        types: [llm]
+        enforcement: preventive
+        mechanism: Gateway only routes to models in the AI governance register
+        evidence: Gateway model routing table

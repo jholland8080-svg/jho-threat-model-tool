@@ -10,7 +10,7 @@ from typing import List, Optional
 
 from . import __version__, vocab
 from .engine import RATING_ORDER, analyze
-from .model import DEFAULT_LIBRARY, IntakeError, load_intake, load_library
+from .model import DEFAULT_LIBRARY, IntakeError, check_platform_refs, load_intake, load_library, load_platforms
 from .report import render_markdown, write_csv
 
 TEMPLATE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "templates", "intake-template.yaml")
@@ -23,11 +23,13 @@ def _libraries(extra: Optional[List[str]]) -> List[str]:
 def cmd_analyze(args: argparse.Namespace) -> int:
     try:
         model, warnings = load_intake(args.intake)
+        platforms = load_platforms(args.platforms or [])
     except IntakeError as exc:
         print(exc, file=sys.stderr)
         return 1
+    warnings += check_platform_refs(model, platforms)
     rules = load_library(_libraries(args.library))
-    result = analyze(model, rules)
+    result = analyze(model, rules, platforms)
 
     if args.min_rating:
         floor = RATING_ORDER.index(args.min_rating)
@@ -43,6 +45,10 @@ def cmd_analyze(args: argparse.Namespace) -> int:
     findings = result["findings"]
     active = [f for f in findings if f["status"] != "Mitigated"]
     print(f"Threat model written to {output}")
+    inherited = sum(1 for f in findings if f["status"] == "Mitigated" and f["controls_inherited"]
+                    and f["without_inheritance"]["status"] != "Mitigated")
+    if platforms:
+        print(f"  {inherited} threats fully mitigated by inherited platform controls")
     print(f"  {len(findings)} threats ({len(active)} open or partially mitigated), "
           f"{len(result['gaps'])} open questions, {len(warnings)} warnings")
     for r in reversed(RATING_ORDER):
@@ -67,10 +73,12 @@ def cmd_analyze(args: argparse.Namespace) -> int:
 
 def cmd_validate(args: argparse.Namespace) -> int:
     try:
-        _, warnings = load_intake(args.intake)
+        model, warnings = load_intake(args.intake)
+        platforms = load_platforms(args.platforms or [])
     except IntakeError as exc:
         print(exc, file=sys.stderr)
         return 1
+    warnings += check_platform_refs(model, platforms)
     load_library(_libraries(args.library))
     for w in warnings:
         print(f"warning: {w}")
@@ -95,6 +103,21 @@ def cmd_rules(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_platforms(args: argparse.Namespace) -> int:
+    try:
+        platforms = load_platforms(args.baseline)
+    except IntakeError as exc:
+        print(exc, file=sys.stderr)
+        return 1
+    for p in platforms.values():
+        extra = f" (builds on {', '.join(p['inherits'])})" if p["inherits"] else ""
+        print(f"{p['id']}: {p['name']}{extra}")
+        for e in p["controls"]:
+            covers = ", ".join(e["types"]) or ", ".join(e["applies_to"])
+            print(f"    {e['control']:30} {e['enforcement']:10} {covers}")
+    return 0
+
+
 def _print_table(items) -> int:
     width = max(len(k) for k in items)
     for k, v in items.items():
@@ -114,11 +137,13 @@ def build_parser() -> argparse.ArgumentParser:
     a.add_argument("--min-rating", choices=RATING_ORDER, help="Only include findings at or above this rating")
     a.add_argument("--fail-on", choices=RATING_ORDER, help="Exit with code 2 if any open finding is at or above this rating")
     a.add_argument("--library", action="append", help="Extra threat library YAML (can repeat)")
+    a.add_argument("--platforms", action="append", help="Platform baseline YAML: controls apps inherit (can repeat)")
     a.set_defaults(func=cmd_analyze)
 
     v = sub.add_parser("validate", help="Check an intake file without generating a report")
     v.add_argument("intake")
     v.add_argument("--library", action="append")
+    v.add_argument("--platforms", action="append")
     v.set_defaults(func=cmd_validate)
 
     i = sub.add_parser("init", help="Create a new intake file from the template")
@@ -129,6 +154,10 @@ def build_parser() -> argparse.ArgumentParser:
     r = sub.add_parser("rules", help="List the threat rules")
     r.add_argument("--library", action="append")
     r.set_defaults(func=cmd_rules)
+
+    pl = sub.add_parser("platforms", help="List platforms and the controls they provide")
+    pl.add_argument("baseline", nargs="+", help="Platform baseline YAML file(s)")
+    pl.set_defaults(func=cmd_platforms)
 
     sub.add_parser("types", help="List component types").set_defaults(func=lambda _: _print_table(vocab.COMPONENT_TYPES))
     sub.add_parser("data", help="List data classes").set_defaults(func=lambda _: _print_table(vocab.DATA_CLASSES))

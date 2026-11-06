@@ -10,7 +10,9 @@ app:
   criticality: medium            # low | medium | high
   users: [employees]             # employees | customers | partners | admins
   regulatory: []                 # pci | glba | sox | nydfs | sr11-7 | hipaa | gdpr
-  controls: []                   # controls that apply to everything, e.g. [sso, logging_siem, audit_logging]
+  controls: []                   # controls the app team implements everywhere, e.g. [sso, logging_siem]
+  platforms: []                  # cloud platforms the app builds on; their controls are inherited
+                                 # (ids from the platform baseline: python -m tmtool platforms <baseline>)
 
 # Trust zones. Flows between different zones are trust boundary crossings.
 zones:
@@ -36,7 +38,9 @@ components:
     zone: app
     internet_facing: false
     data: [internal]             # see: python -m tmtool data
-    controls: [sso]              # see: python -m tmtool controls
+    controls: [sso]              # controls the APP TEAM implements: python -m tmtool controls
+    # platform: eks              # platform this component runs on (adds to app.platforms); `none` = inherits nothing
+    # exceptions: []             # approved exceptions to a platform control, e.g. [public_access_block]
 
   - id: db
     name: Application database

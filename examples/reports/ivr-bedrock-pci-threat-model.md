@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Generated** | 2026-11-05 |
+| **Generated** | 2026-11-06 |
 | **Owner** | Contact Center Technology |
 | **Stage** | build |
 | **Criticality** | High |
@@ -567,7 +567,7 @@ Critical and High threats that are not fully mitigated. Fix these, or document a
 
 ### Mitigated threats
 
-These threats apply to the design, and all listed controls are reported as in place. Verify the controls actually exist (e.g. CSPM findings, config review).
+These threats apply to the design, and all listed controls are in place. App team controls are self-reported, so verify them (e.g. CSPM findings, config review). Inherited controls are verified through the platform's evidence.
 
 - T-032 · **Unapproved or compromised models** on *Amazon Bedrock* (residual Low, controls: model_allowlist)
 - T-033 · **AI activity not logged for investigation** on *Amazon Bedrock* (residual Low, controls: invocation_logging)
@@ -648,5 +648,6 @@ These threats apply to the design, and all listed controls are reported as in pl
 
 - Threats come from a rule-based library (STRIDE, OWASP Top 10 for LLM Applications 2025, cloud and container threats). Each rule fires when the architecture matches its conditions.
 - **Likelihood and impact** start from the rule's base score (1–5), then: +1 likelihood if internet-facing; +1 impact for highly sensitive data (restricted, customer PII, PCI, credentials); ±1 impact for high/low application criticality; −1 likelihood if some listed controls are in place, −2 if all are.
+- **Inherited controls** from the platform baseline count the same as app team controls, except that detective-only coverage can't fully mitigate a threat. Each finding is also scored without them, to show what the platforms contribute.
 - **Ratings:** Critical 20–25 · High 12–19 · Medium 6–11 · Low 1–5.
 - This is a starting point for a threat modeling session, not a replacement for one. Controls are as reported by the app team and should be verified.

@@ -1,5 +1,8 @@
 # Example: internal GenAI assistant (RAG) on EKS calling Amazon Bedrock.
 # Matches the worked example in the threat modeling guide.
+# Builds on the platforms in platforms/example-baseline.yaml, so controls those platforms enforce
+# (Kyverno, Istio mTLS, the GenAI gateway's guardrails, SCPs) are inherited, not listed here:
+#   python -m tmtool analyze examples/genai-rag-chatbot.yaml --platforms platforms/example-baseline.yaml
 
 app:
   name: Employee GenAI Assistant
@@ -12,6 +15,7 @@ app:
   users: [employees, admins]
   regulatory: [glba]
   controls: [sso, audit_logging, logging_siem]
+  platforms: [aws-lz]            # whole app runs in the AWS Landing Zone
 
 zones:
   - id: corp
@@ -36,21 +40,22 @@ components:
   - id: chatbot-api
     name: Chatbot API
     type: container_workload
-    platform: eks
+    platform: eks                # inherits Kyverno, image scanning/signing, default-deny network policy
     zone: app-vpc
     data: [internal, confidential]
-    controls: [workload_identity, image_scanning, admission_control, non_root, network_policy]
+    controls: [workload_identity]
 
   - id: bedrock
     name: Amazon Bedrock (Claude)
     type: llm
+    platform: genai-gateway      # inherits guardrails, prompt attack filter, quotas, invocation logging
     zone: aws-managed
     ai:
       rag: true
       agent_actions: false
       untrusted_content: false
       decision_support: false
-    controls: [private_endpoint, guardrails, model_allowlist, invocation_logging]
+    controls: [private_endpoint]
 
   - id: knowledge-base
     name: Bedrock Knowledge Base
@@ -64,7 +69,7 @@ components:
     type: object_storage
     zone: aws-managed
     data: [internal, confidential]
-    controls: [public_access_block, encryption_cmk]
+    controls: []                 # public access block and CMK encryption come from the landing zone
 
   - id: logs
     name: Invocation logs (CloudWatch → SIEM)
@@ -75,6 +80,7 @@ components:
   - id: pipeline
     name: GitHub Actions pipeline
     type: ci_cd
+    platform: none               # runs in GitHub, not the landing zone: inherits nothing
     zone: corp
     controls: [branch_protection, deploy_approvals, secrets_scanning]
 

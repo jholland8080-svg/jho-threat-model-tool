@@ -8,6 +8,9 @@ from . import vocab
 
 RATING_ORDER = ["Low", "Medium", "High", "Critical"]
 
+# Component types that don't run on our platforms, so they don't inherit app-wide platform controls.
+NOT_HOSTED = {"user", "saas", "external_system"}
+
 
 def rating_for(score: int) -> str:
     if score >= 20:
@@ -33,12 +36,65 @@ def _clamp(value: int) -> int:
 
 
 class Analyzer:
-    def __init__(self, model: Dict[str, Any], rules: List[Dict[str, Any]]):
+    def __init__(self, model: Dict[str, Any], rules: List[Dict[str, Any]],
+                 platforms: Optional[Dict[str, Dict[str, Any]]] = None):
         self.model = model
         self.rules = rules
+        self.platforms = platforms or {}
         self.app = model["app"]
         self.components = model["components"]
         self.flows = model["flows"]
+
+    # ------------------------------------------------------------------ inheritance
+    def _expand(self, pids: List[str]) -> List[str]:
+        """Platform ids plus everything they inherit, in order, without repeats (cycle-safe)."""
+        out: List[str] = []
+        stack = list(reversed(pids))
+        while stack:
+            pid = stack.pop()
+            if pid in out or pid not in self.platforms:
+                continue
+            out.append(pid)
+            stack.extend(reversed(self.platforms[pid]["inherits"]))
+        return out
+
+    def component_platforms(self, comp: Dict[str, Any]) -> List[str]:
+        """Platforms a component runs on. App-wide platforms don't extend to things we don't host
+        (users, SaaS, external systems) or to components marked `platform: none`."""
+        own = [p for p in comp["platforms"] if p.lower() != "none"]
+        if "none" in (p.lower() for p in comp["platforms"]) or comp["type"] in NOT_HOSTED:
+            return self._expand(own)
+        return self._expand(own + self.app["platforms"])
+
+    def _collect(self, pids: List[str], target: str, ctype: Optional[str] = None,
+                 exceptions: Optional[List[str]] = None) -> Dict[str, Dict[str, Any]]:
+        """control -> source entry. Preventive coverage wins over detective when several platforms give it."""
+        found: Dict[str, Dict[str, Any]] = {}
+        for pid in pids:
+            plat = self.platforms[pid]
+            for entry in plat["controls"]:
+                if target not in entry["applies_to"]:
+                    continue
+                if ctype and entry["types"] and ctype not in entry["types"]:
+                    continue
+                if exceptions and entry["control"] in exceptions:
+                    continue
+                current = found.get(entry["control"])
+                if current and not (current["enforcement"] == "detective" and entry["enforcement"] == "preventive"):
+                    continue
+                found[entry["control"]] = dict(entry, platform=pid, platform_name=plat["name"])
+        return found
+
+    def inherited_for_component(self, comp: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
+        return self._collect(self.component_platforms(comp), "component", comp["type"], comp["exceptions"])
+
+    def inherited_for_flow(self, flow: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
+        src = self.component_platforms(self.components[flow["from"]])
+        dst = set(self.component_platforms(self.components[flow["to"]]))
+        return self._collect([p for p in src if p in dst], "flow")
+
+    def inherited_for_app(self) -> Dict[str, Dict[str, Any]]:
+        return self._collect(self._expand(self.app["platforms"]), "app")
 
     # ------------------------------------------------------------------ helpers
     def component_data(self, cid: str) -> Set[str]:
@@ -121,7 +177,23 @@ class Analyzer:
         return True
 
     # ------------------------------------------------------------------ scoring
-    def _score(self, rule: Dict[str, Any], controls: Set[str], data: Set[str], exposed: bool) -> Dict[str, Any]:
+    def _score(self, rule: Dict[str, Any], controls: Set[str], data: Set[str], exposed: bool,
+               inherited: Optional[Dict[str, Dict[str, Any]]] = None) -> Dict[str, Any]:
+        """Score a finding. `controls` are the team's own; `inherited` come from platforms.
+
+        Also scores the finding without inheritance, so the report can show what the platforms bought.
+        """
+        inherited = inherited or {}
+        scored = self._score_once(rule, controls, inherited, data, exposed)
+        if inherited:
+            without = self._score_once(rule, controls, {}, data, exposed)
+            scored["without_inheritance"] = {k: without[k] for k in ("likelihood", "score", "rating", "status")}
+        else:
+            scored["without_inheritance"] = {k: scored[k] for k in ("likelihood", "score", "rating", "status")}
+        return scored
+
+    def _score_once(self, rule: Dict[str, Any], controls: Set[str], inherited: Dict[str, Dict[str, Any]],
+                    data: Set[str], exposed: bool) -> Dict[str, Any]:
         likelihood, impact = int(rule["likelihood"]), int(rule["impact"])
         adjustments = []
         if exposed:
@@ -138,15 +210,28 @@ class Analyzer:
             adjustments.append("-1 impact: low-criticality application")
 
         mitigations = list(rule.get("mitigated_by", []))
-        present = [m for m in mitigations if m in controls]
-        missing = [m for m in mitigations if m not in controls]
+        present = [m for m in mitigations if m in controls or m in inherited]
+        missing = [m for m in mitigations if m not in present]
+        # A preventive platform control is credited to the platform (centrally enforced, with evidence) even if
+        # the team also lists it. Detective-only coverage can't fully mitigate a threat by itself.
+        from_platform = {m: inherited[m] for m in present if m in inherited
+                         and (m not in controls or inherited[m]["enforcement"] == "preventive")}
+        detective_only = [m for m in present if m not in controls and inherited.get(m, {}).get("enforcement") == "detective"]
+        strong = [m for m in present if m not in detective_only]
         any_mode = rule.get("mitigation_mode") == "any"
         if any_mode and present:
             missing = []
-        if mitigations and not missing:
+        fully_covered = bool(mitigations) and not missing
+        if fully_covered and (strong if any_mode else not detective_only):
             status = "Mitigated"
             likelihood -= 2
-            adjustments.append("-2 likelihood: all listed controls in place")
+            adjustments.append("-2 likelihood: all listed controls in place"
+                               + (" (incl. inherited from platform)" if from_platform else ""))
+        elif fully_covered:
+            status = "Partially mitigated"
+            likelihood -= 1
+            adjustments.append("-1 likelihood: controls in place, but " + ", ".join(detective_only)
+                               + " is only detective (drift is caught after the fact)")
         elif present:
             status = "Partially mitigated"
             likelihood -= 1
@@ -164,6 +249,9 @@ class Analyzer:
             "status": status,
             "controls_present": present,
             "controls_missing": missing,
+            "controls_inherited": {m: {k: src[k] for k in ("platform", "platform_name", "enforcement", "mechanism", "evidence")}
+                                   for m, src in from_platform.items()},
+            "controls_detective_only": detective_only if fully_covered and status != "Mitigated" else [],
             "any_of": any_mode and len(missing) > 1,
             "adjustments": adjustments,
         }
@@ -180,7 +268,8 @@ class Analyzer:
                     if not self._component_matches(rule, comp):
                         continue
                     controls = set(comp["controls"]) | app_controls
-                    scored = self._score(rule, controls, self.component_data(comp["id"]), comp["internet_facing"])
+                    scored = self._score(rule, controls, self.component_data(comp["id"]), comp["internet_facing"],
+                                         self.inherited_for_component(comp))
                     findings.append(self._finding(rule, "component", comp["id"], comp["name"], scored))
             elif target == "flow":
                 for flow in self.flows:
@@ -189,7 +278,7 @@ class Analyzer:
                     src, dst = self.components[flow["from"]], self.components[flow["to"]]
                     exposed = src["internet_facing"] or src["zone"] == "internet"
                     controls = set(flow["controls"]) | app_controls
-                    scored = self._score(rule, controls, set(flow["data"]), exposed)
+                    scored = self._score(rule, controls, set(flow["data"]), exposed, self.inherited_for_flow(flow))
                     label = f"{flow['id']}: {src['name']} → {dst['name']}"
                     findings.append(self._finding(rule, "flow", flow["id"], label, scored))
             elif target == "app":
@@ -197,7 +286,7 @@ class Analyzer:
                     all_data: Set[str] = set()
                     for cid in self.components:
                         all_data |= self.component_data(cid)
-                    scored = self._score(rule, app_controls, all_data, False)
+                    scored = self._score(rule, app_controls, all_data, False, self.inherited_for_app())
                     findings.append(self._finding(rule, "app", "app", self.app["name"], scored))
 
         findings.sort(key=lambda f: (-f["score"], f["status"] == "Mitigated", f["rule_id"], f["target_id"]))
@@ -208,6 +297,25 @@ class Analyzer:
             "findings": findings,
             "boundary_crossings": [f for f in self.flows if self.crosses_boundary(f)],
             "gaps": self.intake_gaps(),
+            "inheritance": self.inheritance_summary(),
+        }
+
+    def inheritance_summary(self) -> Dict[str, Any]:
+        """Which platforms are in scope and what each component inherits (for the report)."""
+        in_scope: List[str] = self._expand(self.app["platforms"])
+        per_component: Dict[str, Dict[str, Dict[str, Any]]] = {}
+        for c in self.components.values():
+            if c["type"] == "user":
+                continue
+            for pid in self.component_platforms(c):
+                if pid not in in_scope:
+                    in_scope.append(pid)
+            per_component[c["id"]] = self.inherited_for_component(c)
+        return {
+            "platforms": [self.platforms[p] for p in in_scope],
+            "components": per_component,
+            "app": self.inherited_for_app(),
+            "exceptions": {c["id"]: c["exceptions"] for c in self.components.values() if c["exceptions"]},
         }
 
     @staticmethod
@@ -274,11 +382,14 @@ class Analyzer:
         return gaps
 
 
-def analyze(model: Dict[str, Any], rules: List[Dict[str, Any]]) -> Dict[str, Any]:
-    return Analyzer(model, rules).run()
+def analyze(model: Dict[str, Any], rules: List[Dict[str, Any]],
+            platforms: Optional[Dict[str, Dict[str, Any]]] = None) -> Dict[str, Any]:
+    return Analyzer(model, rules, platforms).run()
 
 
-def worst_open_rating(findings: List[Dict[str, Any]]) -> Optional[str]:
+def worst_open_rating(findings: List[Dict[str, Any]], without_inheritance: bool = False) -> Optional[str]:
+    if without_inheritance:
+        findings = [f["without_inheritance"] for f in findings]
     open_ratings = [f["rating"] for f in findings if f["status"] != "Mitigated"]
     if not open_ratings:
         return None

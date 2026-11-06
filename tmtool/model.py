@@ -61,6 +61,7 @@ def normalize_intake(raw: Dict[str, Any]) -> Tuple[Dict[str, Any], List[str]]:
         "users": [str(u).lower() for u in _as_list(app_raw.get("users"))],
         "regulatory": [str(r).lower() for r in _as_list(app_raw.get("regulatory"))],
         "controls": [str(c) for c in _as_list(app_raw.get("controls"))],
+        "platforms": [str(p) for p in _as_list(app_raw.get("platforms"))],
     }
     if not app["name"]:
         errors.append("app.name is required")
@@ -102,7 +103,9 @@ def normalize_intake(raw: Dict[str, Any]) -> Tuple[Dict[str, Any], List[str]]:
             "name": c.get("name", cid),
             "type": ctype,
             "zone": zone,
-            "platform": str(c.get("platform", "")).lower() or None,
+            "platform": ", ".join(str(p) for p in _as_list(c.get("platform"))) or None,
+            "platforms": [str(p) for p in _as_list(c.get("platform"))],
+            "exceptions": [str(x) for x in _as_list(c.get("exceptions"))],
             "internet_facing": bool(c.get("internet_facing", False)),
             "data": [str(d).lower() for d in _as_list(c.get("data"))],
             "controls": [str(x) for x in _as_list(c.get("controls"))],
@@ -145,6 +148,7 @@ def normalize_intake(raw: Dict[str, Any]) -> Tuple[Dict[str, Any], List[str]]:
     for comp in components.values():
         check_data(f"component '{comp['id']}'", comp["data"])
         check_controls(f"component '{comp['id']}'", comp["controls"])
+        check_controls(f"component '{comp['id']}' exceptions", comp["exceptions"])
     for flow in flows:
         check_data(f"flow '{flow['id']}'", flow["data"])
         check_controls(f"flow '{flow['id']}'", flow["controls"])
@@ -195,3 +199,78 @@ def _validate_rule(rule: Dict[str, Any], path: str) -> None:
     for k in ("likelihood", "impact"):
         if not 1 <= int(rule[k]) <= 5:
             raise ValueError(f"{where}: {k} must be 1-5")
+
+
+# ---------------------------------------------------------------------- platforms
+ENFORCEMENT = ("preventive", "detective")
+PLATFORM_TARGETS = ("component", "flow", "app")
+
+
+def load_platforms(paths: List[str]) -> Dict[str, Dict[str, Any]]:
+    """Load platform baseline files (controls app teams inherit). Later files can override a platform by id."""
+    platforms: Dict[str, Dict[str, Any]] = {}
+    for path in paths:
+        try:
+            with open(path) as fh:
+                data = yaml.safe_load(fh) or {}
+        except FileNotFoundError:
+            raise IntakeError(f"Platform baseline not found: {path}")
+        for p in _as_list(data.get("platforms")):
+            pid = p.get("id")
+            if not pid:
+                raise IntakeError(f"{path}: every platform needs an id")
+            controls = []
+            for i, c in enumerate(_as_list(p.get("controls")), start=1):
+                where = f"{path}: platform {pid} control #{i}"
+                name = c.get("control")
+                if name not in vocab.CONTROLS:
+                    raise IntakeError(f"{where}: unknown control '{name}' (run `python -m tmtool controls`)")
+                for t in _as_list(c.get("types")):
+                    if t not in vocab.COMPONENT_TYPES:
+                        raise IntakeError(f"{where}: unknown component type '{t}'")
+                targets = [str(t) for t in _as_list(c.get("applies_to"))] or ["component"]
+                for t in targets:
+                    if t not in PLATFORM_TARGETS:
+                        raise IntakeError(f"{where}: applies_to must be component, flow, or app")
+                enforcement = str(c.get("enforcement", "preventive")).lower()
+                if enforcement not in ENFORCEMENT:
+                    raise IntakeError(f"{where}: enforcement must be preventive or detective")
+                controls.append({
+                    "control": name,
+                    "types": list(_as_list(c.get("types"))),
+                    "applies_to": targets,
+                    "enforcement": enforcement,
+                    "mechanism": " ".join(str(c.get("mechanism", "")).split()),
+                    "evidence": " ".join(str(c.get("evidence", "")).split()),
+                })
+            platforms[pid] = {
+                "id": pid,
+                "name": p.get("name", pid),
+                "owner": p.get("owner", ""),
+                "description": " ".join(str(p.get("description", "")).split()),
+                "inherits": [str(x) for x in _as_list(p.get("inherits"))],
+                "controls": controls,
+            }
+    for p in platforms.values():
+        for parent in p["inherits"]:
+            if parent not in platforms:
+                raise IntakeError(f"platform '{p['id']}' inherits unknown platform '{parent}'")
+    return platforms
+
+
+def check_platform_refs(model: Dict[str, Any], platforms: Dict[str, Dict[str, Any]]) -> List[str]:
+    """Warnings for platform references the baseline doesn't know about."""
+    warnings: List[str] = []
+    refs = [("app.platforms", p) for p in model["app"]["platforms"]]
+    for c in model["components"].values():
+        refs += [(f"component '{c['id']}' platform", p) for p in c["platforms"] if p.lower() != "none"]
+    if not platforms:
+        if model["app"]["platforms"]:
+            warnings.append("app.platforms is set but no platform baseline was loaded (--platforms); "
+                            "inherited controls were not applied")
+        return warnings
+    for where, pid in refs:
+        if pid not in platforms:
+            warnings.append(f"{where}: '{pid}' is not in the platform baseline, so nothing is inherited from it "
+                            f"(known: {', '.join(platforms)})")
+    return warnings

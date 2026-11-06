@@ -19,5 +19,5 @@ jobs:
       - run: python -m unittest discover -s tests -v
       - name: Example threat models
         run: |
-          python -m tmtool analyze examples/genai-rag-chatbot.yaml
+          python -m tmtool analyze examples/genai-rag-chatbot.yaml --platforms platforms/example-baseline.yaml
           python -m tmtool analyze examples/ivr-bedrock-pci.yaml
