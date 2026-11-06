@@ -59,33 +59,33 @@ Applies to: whole application · Owner: Network / Infrastructure team · Builds 
 
 Private VPCs connected to the hybrid network, inheriting the enterprise network perimeter. Access to AWS services goes through VPC endpoints in shared services infrastructure, with endpoint policies on data services. Builds on the AWS Organization Guardrails.
 
-| Control | Covers | Enforcement | Mechanism | Evidence |
-|---|---|---|---|---|
-| `egress_control` | web_app, api, container_workload, vm, ai_agent | Preventive | Private VPCs without direct internet egress; outbound traffic goes through the hybrid network perimeter, and VPC endpoint policies restrict AWS API calls to org-owned resources | Network architecture standard; perimeter firewall / proxy policy; VPCE policy IDs |
-| `private_endpoint` | database, object_storage, vector_store, queue, secrets_store, llm | Preventive | VPC endpoint use enforced through shared services infrastructure, with VPC endpoint policies on data services | Shared services VPCE inventory; SCP/resource policy aws:SourceVpce conditions |
+| Control | Covers | Enforcement | Mechanism |
+|---|---|---|---|
+| `egress_control` | web_app, api, container_workload, vm, ai_agent | Preventive | Private VPCs without direct internet egress; outbound traffic goes through the hybrid network perimeter, and VPC endpoint policies restrict AWS API calls to org-owned resources |
+| `private_endpoint` | database, object_storage, vector_store, queue, secrets_store, llm | Preventive | VPC endpoint use enforced through shared services infrastructure, with VPC endpoint policies on data services |
 
 ### AWS Organization Guardrails (`aws-org`)
 
-Applies to: inherited by another platform · Owner: Cloud Security / Cloud Platform Engineering
+Applies to: through Private Hybrid Network · Owner: Cloud Security / Cloud Platform Engineering
 
 Organization-wide preventive guardrails (SCP allow/deny lists for services and actions, RCPs that only trust our org ID and approved external IDs), federated identity, an OU structure that separates workloads from security and infrastructure accounts, enforced encryption, automatic enrollment in security tooling, and protected enterprise logging. Permissions boundaries are required on every role a workload creates.
 
-| Control | Covers | Enforcement | Mechanism | Evidence |
-|---|---|---|---|---|
-| `segmentation` | web_app, api, api_gateway, load_balancer, container_workload, serverless_function, vm, database, object_storage, queue, secrets_store, vector_store, llm, ai_agent, logging | Preventive | OU structure separates workload accounts from security and infrastructure accounts; SCPs applied per OU | AWS Organizations OU structure; SCP attachments per OU |
-| `public_access_block` | object_storage, queue, secrets_store | Preventive | RCPs deny access to principals outside our org ID, except approved external IDs (covers S3, SQS, Secrets Manager, KMS, STS) | RCP policy IDs; approved external ID register |
-| `encryption_cmk` | database, object_storage, vector_store, queue, secrets_store | Preventive | Encryption at rest with customer-managed KMS keys enforced by SCP | SCP policy ID; Config / CNAPP encryption findings |
-| `tls` | flow | Preventive | Encryption in transit (SSL/TLS) enforced, e.g. aws:SecureTransport deny in SCPs/RCPs and resource policies | SCP / RCP policy IDs |
-| `workload_identity` | web_app, api, container_workload, serverless_function, vm, ai_agent | Preventive | Workloads authenticate with IAM roles, not static keys; roles can only be created with the required permissions boundary | SCP requiring the permissions boundary on iam:CreateRole; IAM users / access keys denied (confirm) |
-| `workload_identity` | ci_cd | Preventive | Pipeline roles assumed through OIDC federated via the IdP; no long-lived pipeline credentials | IAM OIDC provider config; pipeline role trust policies |
-| `mfa` | app | Preventive | Human access to AWS is federated through the corporate IdP with MFA (workforce users, not app end users) | IdP conditional access / MFA policy; IAM Identity Center config |
-| `runtime_detection` | vm, container_workload, serverless_function | Preventive | Accounts auto-enrolled in GuardDuty and the CNAPP at vending; SCP prevents disabling them | GuardDuty delegated admin; CNAPP account coverage report |
-| `vuln_scanning` | vm, container_workload, serverless_function | Detective | CNAPP scans every account automatically; findings routed to owners | CNAPP vulnerability dashboard |
-| `image_scanning` | container_workload | Detective | CNAPP scans container images and registries (reports, does not block deploys) | CNAPP image scanning dashboard |
-| `audit_logging` | app | Preventive | CloudTrail, Config, and Security Hub auto-enabled in every account | Org trail and Config aggregator; Security Hub delegated admin |
-| `logging_siem` | app | Preventive | Enterprise logging solution ensures cloud logs are ingested into the SIEM | SIEM ingestion health dashboard |
-| `log_immutability` | logging | Preventive | Enterprise logging infrastructure is protected by SCPs so no one outside the logging team can alter or disable it | SCP policy ID protecting logging resources |
-| `restricted_log_access` | logging | Preventive | Logging infrastructure and log data access limited to the logging/security team | Log archive account access policy |
+| Control | Covers | Enforcement | Mechanism |
+|---|---|---|---|
+| `segmentation` | web_app, api, api_gateway, load_balancer, container_workload, serverless_function, vm, database, object_storage, queue, secrets_store, vector_store, llm, ai_agent, logging | Preventive | OU structure separates workload accounts from security and infrastructure accounts; SCPs applied per OU |
+| `public_access_block` | object_storage, queue, secrets_store | Preventive | RCPs deny access to principals outside our org ID, except approved external IDs (covers S3, SQS, Secrets Manager, KMS, STS) |
+| `encryption_cmk` | database, object_storage, vector_store, queue, secrets_store | Preventive | Encryption at rest with customer-managed KMS keys enforced by SCP |
+| `tls` | flow | Preventive | Encryption in transit (SSL/TLS) enforced, e.g. aws:SecureTransport deny in SCPs/RCPs and resource policies |
+| `workload_identity` | web_app, api, container_workload, serverless_function, vm, ai_agent | Preventive | Workloads can only use IAM roles; SCPs deny creating IAM users and access keys, and roles can only be created with the required permissions boundary |
+| `workload_identity` | ci_cd | Preventive | Pipeline roles assumed through OIDC federated via the IdP; no long-lived pipeline credentials |
+| `mfa` | app | Preventive | Human access to AWS is federated through the corporate IdP with MFA (workforce users, not app end users) |
+| `runtime_detection` | vm, container_workload, serverless_function | Preventive | Accounts auto-enrolled in GuardDuty and the CNAPP at vending; SCP prevents disabling them |
+| `vuln_scanning` | vm, container_workload, serverless_function | Detective | CNAPP scans every account automatically; findings routed to owners |
+| `image_scanning` | container_workload | Detective | CNAPP scans container images and registries (reports, does not block deploys) |
+| `audit_logging` | app | Preventive | CloudTrail, Config, and Security Hub auto-enabled in every account |
+| `logging_siem` | app | Preventive | Enterprise logging solution ensures cloud logs are ingested into the SIEM |
+| `log_immutability` | logging | Preventive | Enterprise logging infrastructure is protected by SCPs so no one outside the logging team can alter or disable it |
+| `restricted_log_access` | logging | Preventive | Logging infrastructure and log data access limited to the logging/security team |
 
 ## Data flow diagram
 

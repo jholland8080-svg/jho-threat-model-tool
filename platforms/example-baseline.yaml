@@ -15,7 +15,7 @@
 #                detective  = drift is detected and remediated after the fact (Config rule, CNAPP alert).
 #                Detective-only coverage reduces a threat but never fully mitigates it.
 #   mechanism:   how the platform enforces it
-#   evidence:    where an auditor or reviewer can verify it (fill in policy IDs, dashboards, runbooks)
+#   evidence:    optional; where a reviewer can verify it (policy IDs, dashboards). Blank is fine.
 #
 # Deliberately NOT claimed (the app team still owns these):
 #   - least_privilege_iam: permissions boundaries cap what a workload role can ever do, but don't make
@@ -42,84 +42,84 @@ platforms:
                 database, object_storage, queue, secrets_store, vector_store, llm, ai_agent, logging]
         enforcement: preventive
         mechanism: OU structure separates workload accounts from security and infrastructure accounts; SCPs applied per OU
-        evidence: AWS Organizations OU structure; SCP attachments per OU
+        evidence: ""
 
       # ---- Data perimeter (RCPs)
       - control: public_access_block
         types: [object_storage, queue, secrets_store]
         enforcement: preventive
         mechanism: RCPs deny access to principals outside our org ID, except approved external IDs (covers S3, SQS, Secrets Manager, KMS, STS)
-        evidence: RCP policy IDs; approved external ID register
+        evidence: ""
 
       # ---- Encryption
       - control: encryption_cmk
         types: [database, object_storage, vector_store, queue, secrets_store]
         enforcement: preventive
         mechanism: Encryption at rest with customer-managed KMS keys enforced by SCP
-        evidence: SCP policy ID; Config / CNAPP encryption findings
+        evidence: ""
       - control: tls
         applies_to: [flow]
         enforcement: preventive
         mechanism: Encryption in transit (SSL/TLS) enforced, e.g. aws:SecureTransport deny in SCPs/RCPs and resource policies
-        evidence: SCP / RCP policy IDs
+        evidence: ""
 
       # ---- Workload and pipeline identity
       - control: workload_identity
         types: [web_app, api, container_workload, serverless_function, vm, ai_agent]
         enforcement: preventive
-        mechanism: Workloads authenticate with IAM roles, not static keys; roles can only be created with the required permissions boundary
-        evidence: SCP requiring the permissions boundary on iam:CreateRole; IAM users / access keys denied (confirm)
+        mechanism: Workloads can only use IAM roles; SCPs deny creating IAM users and access keys, and roles can only be created with the required permissions boundary
+        evidence: ""
       - control: workload_identity
         types: [ci_cd]
         enforcement: preventive
         mechanism: Pipeline roles assumed through OIDC federated via the IdP; no long-lived pipeline credentials
-        evidence: IAM OIDC provider config; pipeline role trust policies
+        evidence: ""
 
       # ---- Human identity
       - control: mfa
         applies_to: [app]
         enforcement: preventive
         mechanism: Human access to AWS is federated through the corporate IdP with MFA (workforce users, not app end users)
-        evidence: IdP conditional access / MFA policy; IAM Identity Center config
+        evidence: ""
 
       # ---- Security tooling (auto-enrolled)
       - control: runtime_detection
         types: [vm, container_workload, serverless_function]
         enforcement: preventive
         mechanism: Accounts auto-enrolled in GuardDuty and the CNAPP at vending; SCP prevents disabling them
-        evidence: GuardDuty delegated admin; CNAPP account coverage report
+        evidence: ""
       - control: vuln_scanning
         types: [vm, container_workload, serverless_function]
         enforcement: detective
         mechanism: CNAPP scans every account automatically; findings routed to owners
-        evidence: CNAPP vulnerability dashboard
+        evidence: ""
       - control: image_scanning
         types: [container_workload]
         enforcement: detective
         mechanism: CNAPP scans container images and registries (reports, does not block deploys)
-        evidence: CNAPP image scanning dashboard
+        evidence: ""
 
       # ---- Logging
       - control: audit_logging
         applies_to: [app]
         enforcement: preventive
         mechanism: CloudTrail, Config, and Security Hub auto-enabled in every account
-        evidence: Org trail and Config aggregator; Security Hub delegated admin
+        evidence: ""
       - control: logging_siem
         applies_to: [app]
         enforcement: preventive
         mechanism: Enterprise logging solution ensures cloud logs are ingested into the SIEM
-        evidence: SIEM ingestion health dashboard
+        evidence: ""
       - control: log_immutability
         types: [logging]
         enforcement: preventive
         mechanism: Enterprise logging infrastructure is protected by SCPs so no one outside the logging team can alter or disable it
-        evidence: SCP policy ID protecting logging resources
+        evidence: ""
       - control: restricted_log_access
         types: [logging]
         enforcement: preventive
         mechanism: Logging infrastructure and log data access limited to the logging/security team
-        evidence: Log archive account access policy
+        evidence: ""
 
   - id: aws-network
     name: Private Hybrid Network
@@ -134,9 +134,9 @@ platforms:
         types: [web_app, api, container_workload, vm, ai_agent]
         enforcement: preventive
         mechanism: Private VPCs without direct internet egress; outbound traffic goes through the hybrid network perimeter, and VPC endpoint policies restrict AWS API calls to org-owned resources
-        evidence: Network architecture standard; perimeter firewall / proxy policy; VPCE policy IDs
+        evidence: ""
       - control: private_endpoint
         types: [database, object_storage, vector_store, queue, secrets_store, llm]
         enforcement: preventive
         mechanism: VPC endpoint use enforced through shared services infrastructure, with VPC endpoint policies on data services
-        evidence: Shared services VPCE inventory; SCP/resource policy aws:SourceVpce conditions
+        evidence: ""

@@ -218,7 +218,13 @@ def render_markdown(model: Dict[str, Any], result: Dict[str, Any], warnings: Lis
         app_plats = set(model["app"]["platforms"])
         for plat in inheritance["platforms"]:
             users = sorted(c["name"] for c in model["components"].values() if plat["id"] in c["platforms"])
-            scope = "whole application" if plat["id"] in app_plats else (", ".join(users) or "inherited by another platform")
+            via = [p["name"] for p in inheritance["platforms"] if plat["id"] in p["inherits"]]
+            if plat["id"] in app_plats:
+                scope = "whole application"
+            elif users:
+                scope = ", ".join(users)
+            else:
+                scope = "through " + ", ".join(via) if via else "inherited by another platform"
             w(f"### {plat['name']} (`{plat['id']}`)\n")
             meta = [f"Applies to: {scope}"]
             if plat["owner"]:
@@ -228,13 +234,15 @@ def render_markdown(model: Dict[str, Any], result: Dict[str, Any], warnings: Lis
             w(" · ".join(meta) + "\n")
             if plat["description"]:
                 w(plat["description"] + "\n")
-            w("| Control | Covers | Enforcement | Mechanism | Evidence |\n|---|---|---|---|---|")
+            show_evidence = any(e["evidence"] for e in plat["controls"])
+            w("| Control | Covers | Enforcement | Mechanism |" + (" Evidence |" if show_evidence else "")
+              + "\n|---|---|---|---|" + ("---|" if show_evidence else ""))
             for e in plat["controls"]:
                 covers = ", ".join(e["types"]) if e["types"] else ", ".join(e["applies_to"])
                 if e["applies_to"] == ["component"] and not e["types"]:
                     covers = "all components"
-                w(f"| `{e['control']}` | {covers} | {e['enforcement'].capitalize()} | {_cell(e['mechanism']) or '—'} | "
-                  f"{_cell(e['evidence']) or '—'} |")
+                w(f"| `{e['control']}` | {covers} | {e['enforcement'].capitalize()} | {_cell(e['mechanism']) or '—'} |"
+                  + (f" {_cell(e['evidence']) or '—'} |" if show_evidence else ""))
             w("")
         if inheritance.get("exceptions"):
             w("**Approved exceptions** (the platform control does *not* apply to these components):\n")
