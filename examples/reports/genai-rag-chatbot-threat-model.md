@@ -15,22 +15,22 @@ Internal chatbot that answers employee questions using company policy and proced
 
 **Overall residual risk: 🟠 High** (highest-rated threat that is not fully mitigated)
 
-**Inherited platform controls (AWS Landing Zone, Shared EKS Platform, Enterprise GenAI Gateway):** 10 threats fully mitigated by the platform and 3 more reduced. Overall residual risk would still be 🟠 High without them, but they take **5 High/Critical threats** off the go-live list. See *Inherited platform controls*.
+**Inherited platform controls (Private Hybrid Network, AWS Organization Guardrails):** 6 threats fully mitigated by the platform and 4 more reduced. Overall residual risk would still be 🟠 High without them, but they take **6 High/Critical threats** off the go-live list. See *Inherited platform controls*.
 
 | Rating | Open without platform controls | Open / partially mitigated | Mitigated |
 |---|---|---|---|
 | 🔴 Critical | 0 | 0 | 0 |
-| 🟠 High | 10 | 5 | 0 |
-| 🟡 Medium | 17 | 11 | 1 |
-| 🟢 Low | 0 | 1 | 14 |
+| 🟠 High | 12 | 6 | 0 |
+| 🟡 Medium | 11 | 11 | 0 |
+| 🟢 Low | 1 | 1 | 13 |
 
 **Top risks to address:**
 
+1. **Indirect prompt injection through retrieved content** on *Amazon Bedrock (Claude)* (🟠 High, open). Add: `content_write_controls`, `prompt_injection_filter`
 1. **Sensitive information disclosure through the model** on *Amazon Bedrock (Claude)* (🟠 High, open). Add: `pii_filter`, `dlp`
 1. **Retrieval returns data the user isn't allowed to see** on *Bedrock Knowledge Base* (🟠 High, open). Add: `permission_aware_retrieval`
 1. **Unknown sensitive data in storage** on *Policy documents (S3)* (🟠 High, open). Add: `data_classification_scanning`
 1. **Unknown sensitive data in storage** on *Bedrock Knowledge Base* (🟠 High, open). Add: `data_classification_scanning`
-1. **Over-privileged workload identity** on *Chatbot API* (🟠 High, open). Add: `least_privilege_iam`
 
 ⚠️ The intake left **1 open question** (see *Questions for the app team*). Answering them may add or change findings.
 
@@ -40,12 +40,12 @@ Internal chatbot that answers employee questions using company policy and proced
 |---|---|---|---|---|---|---|---|
 | **Employee** (`employee`) | user | corp | — | No | — | — | — |
 | **Internal load balancer** (`alb`) | load_balancer | app-vpc | — | No | — | sso, mfa, tls | segmentation |
-| **Chatbot API** (`chatbot-api`) | container_workload | app-vpc | eks | No | internal, confidential | workload_identity | admission_control, image_scanning, image_signing, imds_v2, network_policy, non_root, runtime_detection, segmentation, vuln_scanning, workload_identity |
-| **Amazon Bedrock (Claude)** (`bedrock`) | llm | aws-managed | genai-gateway | No | — | private_endpoint | guardrails, invocation_logging, model_allowlist, prompt_injection_filter, segmentation, token_quota |
-| **Bedrock Knowledge Base** (`knowledge-base`) | vector_store | aws-managed | — | No | internal, confidential | private_endpoint | encryption_cmk, segmentation |
-| **Policy documents (S3)** (`docs-bucket`) | object_storage | aws-managed | — | No | internal, confidential | — | encryption_cmk, public_access_block, segmentation |
-| **Invocation logs (CloudWatch → SIEM)** (`logs`) | logging | aws-managed | — | No | confidential | — | segmentation |
-| **GitHub Actions pipeline** (`pipeline`) | ci_cd | corp | none | No | — | branch_protection, deploy_approvals, secrets_scanning | — |
+| **Chatbot API** (`chatbot-api`) | container_workload | app-vpc | — | No | internal, confidential | admission_control, non_root, network_policy | egress_control, image_scanning, runtime_detection, segmentation, vuln_scanning, workload_identity |
+| **Amazon Bedrock (Claude)** (`bedrock`) | llm | aws-managed | — | No | — | guardrails, model_allowlist, invocation_logging | private_endpoint, segmentation |
+| **Bedrock Knowledge Base** (`knowledge-base`) | vector_store | aws-managed | — | No | internal, confidential | guardrails, model_allowlist, invocation_logging | encryption_cmk, private_endpoint, segmentation |
+| **Policy documents (S3)** (`docs-bucket`) | object_storage | aws-managed | — | No | internal, confidential | — | encryption_cmk, private_endpoint, public_access_block, segmentation |
+| **Invocation logs (CloudWatch → SIEM)** (`logs`) | logging | aws-managed | — | No | confidential | — | log_immutability, restricted_log_access, segmentation |
+| **GitHub Actions pipeline** (`pipeline`) | ci_cd | corp | — | No | — | branch_protection, deploy_approvals, secrets_scanning | workload_identity |
 
 **Application-wide controls** (apply to every component): `sso`, `audit_logging`, `logging_siem`
 
@@ -53,56 +53,39 @@ Internal chatbot that answers employee questions using company policy and proced
 
 Controls the app team gets from the cloud platforms it builds on. **Preventive** controls are guardrails that block non-compliant deployments; **detective** controls catch drift after the fact, so they reduce a threat but never fully mitigate it on their own. The platform team owns these controls and their evidence.
 
-### AWS Landing Zone (`aws-lz`)
+### Private Hybrid Network (`aws-network`)
 
-Applies to: whole application · Owner: Cloud Platform Engineering
+Applies to: whole application · Owner: Network / Infrastructure team · Builds on: `aws-org`
 
-Multi-account AWS organization (Control Tower) with SCPs, org-wide security services, and a log archive account.
-
-| Control | Covers | Enforcement | Mechanism | Evidence |
-|---|---|---|---|---|
-| `segmentation` | all components | Preventive | Account per application and environment; prod and non-prod in separate OUs | AWS Organizations OU structure; account vending pipeline |
-| `public_access_block` | object_storage | Preventive | Account-level S3 Block Public Access; SCP denies s3:PutAccountPublicAccessBlock | SCP p-deny-s3-public; Wiz control 'S3 public access' |
-| `encryption_cmk` | object_storage, database, queue, vector_store | Detective | AWS Config conformance pack flags resources without a customer-managed KMS key; auto-ticketed | Config conformance pack 'data-protection'; Wiz CSPM |
-| `imds_v2` | vm, container_workload | Preventive | SCP requires ec2:MetadataHttpTokens=required on RunInstances; hop limit 1 in golden AMI launch templates | SCP p-require-imdsv2 |
-| `runtime_detection` | vm, container_workload, serverless_function | Preventive | GuardDuty (incl. Runtime Monitoring) enabled org-wide by delegated admin; SCP denies disabling it | GuardDuty delegated admin console; SCP p-protect-security-services |
-| `vuln_scanning` | vm, container_workload, serverless_function | Detective | Amazon Inspector and Wiz agentless scanning across all accounts | Wiz vulnerability dashboard |
-| `model_allowlist` | llm, ai_agent | Preventive | SCP restricts bedrock:InvokeModel to AI-governance-approved model ARNs | SCP p-bedrock-approved-models; AI governance model register |
-| `audit_logging` | app | Preventive | Organization CloudTrail (management + data events) to the log archive account. Covers the cloud control plane, not application logs. | Org trail config; SCP p-protect-cloudtrail |
-| `log_immutability` | app | Preventive | Log archive bucket with S3 Object Lock (compliance mode) in a separate account | Log archive account bucket policy |
-| `privileged_access_management` | app | Preventive | Human prod access only through IAM Identity Center permission sets with JIT approval; IAM users denied by SCP | SCP p-deny-iam-users; JIT approval logs |
-| `mfa` | app | Preventive | IAM Identity Center requires MFA for all console and CLI sessions (workforce users, not app end users) | Identity Center MFA settings |
-
-### Shared EKS Platform (`eks`)
-
-Applies to: Chatbot API · Owner: Container Platform team · Builds on: `aws-lz`
-
-Multi-tenant EKS clusters with Kyverno, Istio, and default-deny networking. Builds on the AWS Landing Zone.
+Private VPCs connected to the hybrid network, inheriting the enterprise network perimeter. Access to AWS services goes through VPC endpoints in shared services infrastructure, with endpoint policies on data services. Builds on the AWS Organization Guardrails.
 
 | Control | Covers | Enforcement | Mechanism | Evidence |
 |---|---|---|---|---|
-| `admission_control` | container_workload | Preventive | Kyverno policies in Enforce mode (Pod Security 'restricted' profile plus org policies) | Kyverno policy reports; cluster-policies repo |
-| `non_root` | container_workload | Preventive | Kyverno rejects privileged pods and runAsNonRoot=false | Kyverno policy require-run-as-nonroot |
-| `image_scanning` | container_workload | Preventive | Admission webhook blocks images with critical CVEs or no scan result | Kyverno policy block-critical-cves; Wiz image scanning |
-| `image_signing` | container_workload | Preventive | Kyverno verifyImages requires a Cosign signature from the platform pipeline | Kyverno policy verify-image-signature |
-| `network_policy` | container_workload | Preventive | Namespaces are created with default-deny ingress and egress NetworkPolicies | Namespace vending templates |
-| `workload_identity` | container_workload | Detective | EKS Pod Identity is the standard; Wiz flags static AWS keys found in pods or images | Wiz secrets-in-workloads findings |
-| `mtls` | flow | Preventive | Istio STRICT mTLS PeerAuthentication mesh-wide | Istio mesh config |
-| `tls` | flow | Preventive | Istio STRICT mTLS (TLS 1.2+) between all in-mesh workloads | Istio mesh config |
+| `egress_control` | web_app, api, container_workload, vm, ai_agent | Preventive | Private VPCs without direct internet egress; outbound traffic goes through the hybrid network perimeter, and VPC endpoint policies restrict AWS API calls to org-owned resources | Network architecture standard; perimeter firewall / proxy policy; VPCE policy IDs |
+| `private_endpoint` | database, object_storage, vector_store, queue, secrets_store, llm | Preventive | VPC endpoint use enforced through shared services infrastructure, with VPC endpoint policies on data services | Shared services VPCE inventory; SCP/resource policy aws:SourceVpce conditions |
 
-### Enterprise GenAI Gateway (`genai-gateway`)
+### AWS Organization Guardrails (`aws-org`)
 
-Applies to: Amazon Bedrock (Claude) · Owner: AI Platform team · Builds on: `aws-lz`
+Applies to: inherited by another platform · Owner: Cloud Security / Cloud Platform Engineering
 
-Central gateway that all LLM calls go through. Applies guardrails, quotas, and logging. Builds on the AWS Landing Zone.
+Organization-wide preventive guardrails (SCP allow/deny lists for services and actions, RCPs that only trust our org ID and approved external IDs), federated identity, an OU structure that separates workloads from security and infrastructure accounts, enforced encryption, automatic enrollment in security tooling, and protected enterprise logging. Permissions boundaries are required on every role a workload creates.
 
 | Control | Covers | Enforcement | Mechanism | Evidence |
 |---|---|---|---|---|
-| `guardrails` | llm | Preventive | Gateway attaches the enterprise Bedrock Guardrail to every request; direct model access denied by SCP | Gateway config; SCP p-bedrock-gateway-only |
-| `prompt_injection_filter` | llm | Preventive | Bedrock Guardrails prompt attack filter set to HIGH at the gateway | Enterprise guardrail definition |
-| `token_quota` | llm | Preventive | Per-app token budgets enforced by the gateway | Gateway quota config |
-| `invocation_logging` | llm | Preventive | Gateway logs request metadata and content to the SIEM | SIEM index genai-gateway |
-| `model_allowlist` | llm | Preventive | Gateway only routes to models in the AI governance register | Gateway model routing table |
+| `segmentation` | web_app, api, api_gateway, load_balancer, container_workload, serverless_function, vm, database, object_storage, queue, secrets_store, vector_store, llm, ai_agent, logging | Preventive | OU structure separates workload accounts from security and infrastructure accounts; SCPs applied per OU | AWS Organizations OU structure; SCP attachments per OU |
+| `public_access_block` | object_storage, queue, secrets_store | Preventive | RCPs deny access to principals outside our org ID, except approved external IDs (covers S3, SQS, Secrets Manager, KMS, STS) | RCP policy IDs; approved external ID register |
+| `encryption_cmk` | database, object_storage, vector_store, queue, secrets_store | Preventive | Encryption at rest with customer-managed KMS keys enforced by SCP | SCP policy ID; Config / CNAPP encryption findings |
+| `tls` | flow | Preventive | Encryption in transit (SSL/TLS) enforced, e.g. aws:SecureTransport deny in SCPs/RCPs and resource policies | SCP / RCP policy IDs |
+| `workload_identity` | web_app, api, container_workload, serverless_function, vm, ai_agent | Preventive | Workloads authenticate with IAM roles, not static keys; roles can only be created with the required permissions boundary | SCP requiring the permissions boundary on iam:CreateRole; IAM users / access keys denied (confirm) |
+| `workload_identity` | ci_cd | Preventive | Pipeline roles assumed through OIDC federated via the IdP; no long-lived pipeline credentials | IAM OIDC provider config; pipeline role trust policies |
+| `mfa` | app | Preventive | Human access to AWS is federated through the corporate IdP with MFA (workforce users, not app end users) | IdP conditional access / MFA policy; IAM Identity Center config |
+| `runtime_detection` | vm, container_workload, serverless_function | Preventive | Accounts auto-enrolled in GuardDuty and the CNAPP at vending; SCP prevents disabling them | GuardDuty delegated admin; CNAPP account coverage report |
+| `vuln_scanning` | vm, container_workload, serverless_function | Detective | CNAPP scans every account automatically; findings routed to owners | CNAPP vulnerability dashboard |
+| `image_scanning` | container_workload | Detective | CNAPP scans container images and registries (reports, does not block deploys) | CNAPP image scanning dashboard |
+| `audit_logging` | app | Preventive | CloudTrail, Config, and Security Hub auto-enabled in every account | Org trail and Config aggregator; Security Hub delegated admin |
+| `logging_siem` | app | Preventive | Enterprise logging solution ensures cloud logs are ingested into the SIEM | SIEM ingestion health dashboard |
+| `log_immutability` | logging | Preventive | Enterprise logging infrastructure is protected by SCPs so no one outside the logging team can alter or disable it | SCP policy ID protecting logging resources |
+| `restricted_log_access` | logging | Preventive | Logging infrastructure and log data access limited to the logging/security team | Log archive account access policy |
 
 ## Data flow diagram
 
@@ -149,38 +132,37 @@ Sorted by risk score (likelihood × impact, 1–25). ⬇ platform = inherited pl
 
 | ID | Risk | Threat | Target | STRIDE | L | I | Score | Status | Missing controls |
 |---|---|---|---|---|---|---|---|---|---|
-| T-001 | 🟠 High | Sensitive information disclosure through the model | Amazon Bedrock (Claude) | I | 3 | 4 | **12** | Open | pii_filter, dlp |
-| T-002 | 🟠 High | Retrieval returns data the user isn't allowed to see | Bedrock Knowledge Base | I | 3 | 4 | **12** | Open | permission_aware_retrieval |
-| T-003 | 🟠 High | Unknown sensitive data in storage | Policy documents (S3) | I | 3 | 4 | **12** | Open | data_classification_scanning |
-| T-004 | 🟠 High | Unknown sensitive data in storage | Bedrock Knowledge Base | I | 3 | 4 | **12** | Open | data_classification_scanning |
-| T-005 | 🟠 High | Over-privileged workload identity | Chatbot API | E | 3 | 4 | **12** | Open | least_privilege_iam |
-| T-006 | 🟡 Medium | Pipeline compromise or unauthorized deployment | GitHub Actions pipeline | TE | 2 | 5 | **10** | Partially mitigated | least_privilege_iam |
-| T-007 | 🟡 Medium | Model output trusted by downstream systems | Amazon Bedrock (Claude) | TE | 3 | 3 | **9** | Open | output_validation |
-| T-008 | 🟡 Medium | Infrastructure misconfiguration reaches production | GitHub Actions pipeline | TI | 3 | 3 | **9** | Open | iac_scanning |
-| T-009 | 🟡 Medium | Vulnerable container images | Chatbot API | TE | 3 | 3 | **9** | Partially mitigated ⬇ platform | patching |
-| T-010 | 🟡 Medium | Sensitive data written to logs | Invocation logs (CloudWatch → SIEM) | I | 3 | 3 | **9** | Open | log_redaction, restricted_log_access |
-| T-011 | 🟡 Medium | Indirect prompt injection through retrieved content | Amazon Bedrock (Claude) | T | 2 | 4 | **8** | Partially mitigated ⬇ platform | content_write_controls |
-| T-012 | 🟡 Medium | Data destruction or ransomware | Policy documents (S3) | TD | 2 | 4 | **8** | Open | backups, object_lock |
-| T-013 | 🟡 Medium | Long-lived static credentials in workloads | Chatbot API | SI | 2 | 4 | **8** | Partially mitigated | secrets_manager |
-| T-014 | 🟡 Medium | Uncontrolled outbound traffic enables data exfiltration | Chatbot API | I | 2 | 4 | **8** | Open | egress_control |
-| T-015 | 🟡 Medium | System prompt leakage | Amazon Bedrock (Claude) | I | 3 | 2 | **6** | Open | no_secrets_in_prompts |
-| T-016 | 🟡 Medium | Logs can be altered or disabled | Invocation logs (CloudWatch → SIEM) | R | 2 | 3 | **6** | Open | log_immutability, restricted_log_access |
-| T-017 | 🟡 Medium | Direct prompt injection and jailbreaks | Amazon Bedrock (Claude) | TE | 2 | 3 | **6** | Mitigated ⬇ platform | — |
-| T-018 | 🟢 Low | Container escape via privileged or root containers | Chatbot API | E | 1 | 5 | **5** | Mitigated ⬇ platform | — |
-| T-019 | 🟢 Low | Privileged / admin access without strong controls | Employee GenAI Assistant | SE | 1 | 5 | **5** | Mitigated ⬇ platform | — |
-| T-020 | 🟢 Low | Data store reachable from public networks | Amazon Bedrock (Claude) | I | 1 | 5 | **5** | Mitigated | — |
-| T-021 | 🟢 Low | Data store reachable from public networks | Policy documents (S3) | I | 1 | 5 | **5** | Mitigated ⬇ platform | — |
-| T-022 | 🟢 Low | Data store reachable from public networks | Bedrock Knowledge Base | I | 1 | 5 | **5** | Mitigated | — |
-| T-023 | 🟢 Low | Unbounded consumption and cost abuse | Amazon Bedrock (Claude) | D | 2 | 2 | **4** | Partially mitigated ⬇ platform | rate_limiting |
-| T-024 | 🟢 Low | Unapproved or compromised models | Amazon Bedrock (Claude) | T | 1 | 4 | **4** | Mitigated ⬇ platform | — |
-| T-025 | 🟢 Low | Untrusted or tampered container images | Chatbot API | T | 1 | 4 | **4** | Mitigated ⬇ platform | — |
-| T-026 | 🟢 Low | Node credential theft through the instance metadata service | Chatbot API | EI | 1 | 4 | **4** | Mitigated ⬇ platform | — |
-| T-027 | 🟢 Low | Weak or missing user authentication | Internal load balancer | S | 1 | 4 | **4** | Mitigated | — |
-| T-028 | 🟢 Low | Secrets committed to code or configuration | GitHub Actions pipeline | I | 1 | 4 | **4** | Mitigated | — |
-| T-029 | 🟢 Low | AI activity not logged for investigation | Amazon Bedrock (Claude) | R | 1 | 3 | **3** | Mitigated ⬇ platform | — |
-| T-030 | 🟢 Low | Malicious activity in running containers goes undetected | Chatbot API | RT | 1 | 3 | **3** | Mitigated ⬇ platform | — |
-| T-031 | 🟢 Low | Insufficient audit logging | Employee GenAI Assistant | R | 1 | 3 | **3** | Mitigated | — |
-| T-032 | 🟢 Low | Lateral movement between workloads | Chatbot API | E | 1 | 3 | **3** | Mitigated ⬇ platform | — |
+| T-001 | 🟠 High | Indirect prompt injection through retrieved content | Amazon Bedrock (Claude) | T | 3 | 4 | **12** | Open | content_write_controls, prompt_injection_filter |
+| T-002 | 🟠 High | Sensitive information disclosure through the model | Amazon Bedrock (Claude) | I | 3 | 4 | **12** | Open | pii_filter, dlp |
+| T-003 | 🟠 High | Retrieval returns data the user isn't allowed to see | Bedrock Knowledge Base | I | 3 | 4 | **12** | Open | permission_aware_retrieval |
+| T-004 | 🟠 High | Unknown sensitive data in storage | Policy documents (S3) | I | 3 | 4 | **12** | Open | data_classification_scanning |
+| T-005 | 🟠 High | Unknown sensitive data in storage | Bedrock Knowledge Base | I | 3 | 4 | **12** | Open | data_classification_scanning |
+| T-006 | 🟠 High | Over-privileged workload identity | Chatbot API | E | 3 | 4 | **12** | Open | least_privilege_iam |
+| T-007 | 🟡 Medium | Pipeline compromise or unauthorized deployment | GitHub Actions pipeline | TE | 2 | 5 | **10** | Partially mitigated | least_privilege_iam |
+| T-008 | 🟡 Medium | Privileged / admin access without strong controls | Employee GenAI Assistant | SE | 2 | 5 | **10** | Partially mitigated ⬇ platform | privileged_access_management |
+| T-009 | 🟡 Medium | Direct prompt injection and jailbreaks | Amazon Bedrock (Claude) | TE | 3 | 3 | **9** | Partially mitigated | prompt_injection_filter |
+| T-010 | 🟡 Medium | Model output trusted by downstream systems | Amazon Bedrock (Claude) | TE | 3 | 3 | **9** | Open | output_validation |
+| T-011 | 🟡 Medium | Infrastructure misconfiguration reaches production | GitHub Actions pipeline | TI | 3 | 3 | **9** | Open | iac_scanning |
+| T-012 | 🟡 Medium | Vulnerable container images | Chatbot API | TE | 3 | 3 | **9** | Partially mitigated ⬇ platform | patching |
+| T-013 | 🟡 Medium | Data destruction or ransomware | Policy documents (S3) | TD | 2 | 4 | **8** | Open | backups, object_lock |
+| T-014 | 🟡 Medium | Long-lived static credentials in workloads | Chatbot API | SI | 2 | 4 | **8** | Partially mitigated ⬇ platform | secrets_manager |
+| T-015 | 🟡 Medium | Unbounded consumption and cost abuse | Amazon Bedrock (Claude) | D | 3 | 2 | **6** | Open | token_quota, rate_limiting |
+| T-016 | 🟡 Medium | System prompt leakage | Amazon Bedrock (Claude) | I | 3 | 2 | **6** | Open | no_secrets_in_prompts |
+| T-017 | 🟡 Medium | Sensitive data written to logs | Invocation logs (CloudWatch → SIEM) | I | 2 | 3 | **6** | Partially mitigated ⬇ platform | log_redaction |
+| T-018 | 🟢 Low | Container escape via privileged or root containers | Chatbot API | E | 1 | 5 | **5** | Mitigated | — |
+| T-019 | 🟢 Low | Data store reachable from public networks | Amazon Bedrock (Claude) | I | 1 | 5 | **5** | Mitigated ⬇ platform | — |
+| T-020 | 🟢 Low | Data store reachable from public networks | Policy documents (S3) | I | 1 | 5 | **5** | Mitigated ⬇ platform | — |
+| T-021 | 🟢 Low | Data store reachable from public networks | Bedrock Knowledge Base | I | 1 | 5 | **5** | Mitigated ⬇ platform | — |
+| T-022 | 🟢 Low | Untrusted or tampered container images | Chatbot API | T | 1 | 4 | **4** | Partially mitigated | image_signing |
+| T-023 | 🟢 Low | Unapproved or compromised models | Amazon Bedrock (Claude) | T | 1 | 4 | **4** | Mitigated | — |
+| T-024 | 🟢 Low | Weak or missing user authentication | Internal load balancer | S | 1 | 4 | **4** | Mitigated | — |
+| T-025 | 🟢 Low | Uncontrolled outbound traffic enables data exfiltration | Chatbot API | I | 1 | 4 | **4** | Mitigated ⬇ platform | — |
+| T-026 | 🟢 Low | Secrets committed to code or configuration | GitHub Actions pipeline | I | 1 | 4 | **4** | Mitigated | — |
+| T-027 | 🟢 Low | AI activity not logged for investigation | Amazon Bedrock (Claude) | R | 1 | 3 | **3** | Mitigated | — |
+| T-028 | 🟢 Low | Malicious activity in running containers goes undetected | Chatbot API | RT | 1 | 3 | **3** | Mitigated ⬇ platform | — |
+| T-029 | 🟢 Low | Insufficient audit logging | Employee GenAI Assistant | R | 1 | 3 | **3** | Mitigated | — |
+| T-030 | 🟢 Low | Logs can be altered or disabled | Invocation logs (CloudWatch → SIEM) | R | 1 | 3 | **3** | Mitigated ⬇ platform | — |
+| T-031 | 🟢 Low | Lateral movement between workloads | Chatbot API | E | 1 | 3 | **3** | Mitigated | — |
 
 ## Required before go-live
 
@@ -188,15 +170,28 @@ Critical and High threats that are not fully mitigated. Fix these, or document a
 
 | ID | Threat | Target | Controls to add |
 |---|---|---|---|
-| T-001 | Sensitive information disclosure through the model | Amazon Bedrock (Claude) | pii_filter, dlp |
-| T-002 | Retrieval returns data the user isn't allowed to see | Bedrock Knowledge Base | permission_aware_retrieval |
-| T-003 | Unknown sensitive data in storage | Policy documents (S3) | data_classification_scanning |
-| T-004 | Unknown sensitive data in storage | Bedrock Knowledge Base | data_classification_scanning |
-| T-005 | Over-privileged workload identity | Chatbot API | least_privilege_iam |
+| T-001 | Indirect prompt injection through retrieved content | Amazon Bedrock (Claude) | content_write_controls, prompt_injection_filter |
+| T-002 | Sensitive information disclosure through the model | Amazon Bedrock (Claude) | pii_filter, dlp |
+| T-003 | Retrieval returns data the user isn't allowed to see | Bedrock Knowledge Base | permission_aware_retrieval |
+| T-004 | Unknown sensitive data in storage | Policy documents (S3) | data_classification_scanning |
+| T-005 | Unknown sensitive data in storage | Bedrock Knowledge Base | data_classification_scanning |
+| T-006 | Over-privileged workload identity | Chatbot API | least_privilege_iam |
 
 ## Threat details
 
-### T-001 · Sensitive information disclosure through the model
+### T-001 · Indirect prompt injection through retrieved content
+
+**🟠 High** · score 12 (L3 × I4) · Open · rule `AI-02`
+
+- **Target:** Amazon Bedrock (Claude) (component)
+- **STRIDE:** Tampering
+- **Threat:** Instructions hidden in documents, emails, or web pages that the model reads can change its behavior. There is no complete fix; limit who can write content and what the model can do.
+- **Recommended mitigations:**
+  - `content_write_controls`: Only approved people and processes can add knowledge-base content
+  - `prompt_injection_filter`: Prompt attack / injection detection (e.g. Prompt Shields)
+- **References:** OWASP LLM01:2025 Prompt Injection
+
+### T-002 · Sensitive information disclosure through the model
 
 **🟠 High** · score 12 (L3 × I4) · Open · rule `AI-03`
 
@@ -208,7 +203,7 @@ Critical and High threats that are not fully mitigated. Fix these, or document a
   - `dlp`: Data loss prevention on content
 - **References:** OWASP LLM02:2025 Sensitive Information Disclosure
 
-### T-002 · Retrieval returns data the user isn't allowed to see
+### T-003 · Retrieval returns data the user isn't allowed to see
 
 **🟠 High** · score 12 (L3 × I4) · Open · rule `AI-04`
 
@@ -219,7 +214,7 @@ Critical and High threats that are not fully mitigated. Fix these, or document a
   - `permission_aware_retrieval`: Retrieval filtered by the requesting user's entitlements
 - **References:** OWASP LLM08:2025 Vector and Embedding Weaknesses
 
-### T-003 · Unknown sensitive data in storage
+### T-004 · Unknown sensitive data in storage
 
 **🟠 High** · score 12 (L3 × I4) · Open · rule `DA-02`
 
@@ -230,7 +225,7 @@ Critical and High threats that are not fully mitigated. Fix these, or document a
   - `data_classification_scanning`: Scanned for sensitive data (Macie, Purview, Sensitive Data Protection)
 - **References:** Amazon Macie / Microsoft Purview / GCP Sensitive Data Protection
 
-### T-004 · Unknown sensitive data in storage
+### T-005 · Unknown sensitive data in storage
 
 **🟠 High** · score 12 (L3 × I4) · Open · rule `DA-02`
 
@@ -241,7 +236,7 @@ Critical and High threats that are not fully mitigated. Fix these, or document a
   - `data_classification_scanning`: Scanned for sensitive data (Macie, Purview, Sensitive Data Protection)
 - **References:** Amazon Macie / Microsoft Purview / GCP Sensitive Data Protection
 
-### T-005 · Over-privileged workload identity
+### T-006 · Over-privileged workload identity
 
 **🟠 High** · score 12 (L3 × I4) · Open · rule `ID-04`
 
@@ -252,7 +247,7 @@ Critical and High threats that are not fully mitigated. Fix these, or document a
   - `least_privilege_iam`: IAM roles scoped to exactly what the component needs
 - **References:** MITRE ATT&CK T1078.004 Cloud Accounts
 
-### T-006 · Pipeline compromise or unauthorized deployment
+### T-007 · Pipeline compromise or unauthorized deployment
 
 **🟡 Medium** · score 10 (L2 × I5) · Partially mitigated · rule `CI-01`
 
@@ -265,7 +260,34 @@ Critical and High threats that are not fully mitigated. Fix these, or document a
 - **Score adjustments:** -1 likelihood: some listed controls in place
 - **References:** MITRE ATT&CK T1195 Supply Chain Compromise; OWASP Top 10 CI/CD Security Risks
 
-### T-007 · Model output trusted by downstream systems
+### T-008 · Privileged / admin access without strong controls
+
+**🟡 Medium** · score 10 (L2 × I5) · Partially mitigated · rule `ID-02`
+
+- **Target:** Employee GenAI Assistant (app)
+- **STRIDE:** Spoofing, Elevation of privilege
+- **Threat:** Administrators or support staff have elevated access. Compromise of one admin account can expose the whole application and its data.
+- **Controls in place:** mfa (inherited: AWS Organization Guardrails, preventive)
+- **Without platform controls:** 🟠 High (score 15, open)
+- **Recommended mitigations:**
+  - `privileged_access_management`: Just-in-time, approved, logged admin access
+- **Score adjustments:** -1 likelihood: some listed controls in place
+- **References:** MITRE ATT&CK T1078.004 Cloud Accounts
+
+### T-009 · Direct prompt injection and jailbreaks
+
+**🟡 Medium** · score 9 (L3 × I3) · Partially mitigated · rule `AI-01`
+
+- **Target:** Amazon Bedrock (Claude) (component)
+- **STRIDE:** Tampering, Elevation of privilege
+- **Threat:** Users can craft prompts that override the system's instructions or safety rules.
+- **Controls in place:** guardrails (app team)
+- **Recommended mitigations:**
+  - `prompt_injection_filter`: Prompt attack / injection detection (e.g. Prompt Shields)
+- **Score adjustments:** -1 likelihood: some listed controls in place
+- **References:** OWASP LLM01:2025 Prompt Injection
+
+### T-010 · Model output trusted by downstream systems
 
 **🟡 Medium** · score 9 (L3 × I3) · Open · rule `AI-06`
 
@@ -276,7 +298,7 @@ Critical and High threats that are not fully mitigated. Fix these, or document a
   - `output_validation`: Model output validated or encoded before use
 - **References:** OWASP LLM05:2025 Improper Output Handling
 
-### T-008 · Infrastructure misconfiguration reaches production
+### T-011 · Infrastructure misconfiguration reaches production
 
 **🟡 Medium** · score 9 (L3 × I3) · Open · rule `CI-02`
 
@@ -287,47 +309,21 @@ Critical and High threats that are not fully mitigated. Fix these, or document a
   - `iac_scanning`: IaC scanned in the pipeline (Checkov, Wiz Code, Trivy)
 - **References:** Checkov / Wiz Code / Trivy config
 
-### T-009 · Vulnerable container images
+### T-012 · Vulnerable container images
 
 **🟡 Medium** · score 9 (L3 × I3) · Partially mitigated · rule `CT-01`
 
 - **Target:** Chatbot API (component)
 - **STRIDE:** Tampering, Elevation of privilege
 - **Threat:** Images built on outdated or bloated base images carry exploitable CVEs into production.
-- **Controls in place:** image_scanning (inherited: Shared EKS Platform, preventive)
+- **Controls in place:** image_scanning (inherited: AWS Organization Guardrails, detective)
 - **Without platform controls:** 🟠 High (score 12, open)
 - **Recommended mitigations:**
   - `patching`: Patching within defined SLAs
 - **Score adjustments:** -1 likelihood: some listed controls in place
 - **References:** CIS Kubernetes Benchmark; NIST SP 800-190
 
-### T-010 · Sensitive data written to logs
-
-**🟡 Medium** · score 9 (L3 × I3) · Open · rule `DA-04`
-
-- **Target:** Invocation logs (CloudWatch → SIEM) (component)
-- **STRIDE:** Information disclosure
-- **Threat:** Logs often capture request bodies, tokens, or AI prompts. They are usually readable by more people than the source data.
-- **Recommended mitigations:**
-  - `log_redaction`: Sensitive fields redacted before logging
-  - `restricted_log_access`: Log access limited to those who need it
-- **References:** OWASP Logging Cheat Sheet
-
-### T-011 · Indirect prompt injection through retrieved content
-
-**🟡 Medium** · score 8 (L2 × I4) · Partially mitigated · rule `AI-02`
-
-- **Target:** Amazon Bedrock (Claude) (component)
-- **STRIDE:** Tampering
-- **Threat:** Instructions hidden in documents, emails, or web pages that the model reads can change its behavior. There is no complete fix; limit who can write content and what the model can do.
-- **Controls in place:** prompt_injection_filter (inherited: Enterprise GenAI Gateway, preventive)
-- **Without platform controls:** 🟠 High (score 12, open)
-- **Recommended mitigations:**
-  - `content_write_controls`: Only approved people and processes can add knowledge-base content
-- **Score adjustments:** -1 likelihood: some listed controls in place
-- **References:** OWASP LLM01:2025 Prompt Injection
-
-### T-012 · Data destruction or ransomware
+### T-013 · Data destruction or ransomware
 
 **🟡 Medium** · score 8 (L2 × I4) · Open · rule `DA-03`
 
@@ -339,31 +335,33 @@ Critical and High threats that are not fully mitigated. Fix these, or document a
   - `object_lock`: Write-once / immutable storage for critical data
 - **References:** MITRE ATT&CK T1485 Data Destruction
 
-### T-013 · Long-lived static credentials in workloads
+### T-014 · Long-lived static credentials in workloads
 
 **🟡 Medium** · score 8 (L2 × I4) · Partially mitigated · rule `ID-03`
 
 - **Target:** Chatbot API (component)
 - **STRIDE:** Spoofing, Information disclosure
 - **Threat:** Workloads that use static keys or passwords can have them leaked through code, images, logs, or environment variables, and the keys keep working until someone rotates them.
-- **Controls in place:** workload_identity (app team)
+- **Controls in place:** workload_identity (inherited: AWS Organization Guardrails, preventive)
+- **Without platform controls:** 🟠 High (score 12, open)
 - **Recommended mitigations:**
   - `secrets_manager`: Secrets pulled from a secrets manager, not stored in code or config
 - **Score adjustments:** -1 likelihood: some listed controls in place
 - **References:** MITRE ATT&CK T1552 Unsecured Credentials
 
-### T-014 · Uncontrolled outbound traffic enables data exfiltration
+### T-015 · Unbounded consumption and cost abuse
 
-**🟡 Medium** · score 8 (L2 × I4) · Open · rule `NW-04`
+**🟡 Medium** · score 6 (L3 × I2) · Open · rule `AI-08`
 
-- **Target:** Chatbot API (component)
-- **STRIDE:** Information disclosure
-- **Threat:** If the workload can reach any destination on the internet, an attacker who compromises it can send sensitive data out or download tools.
+- **Target:** Amazon Bedrock (Claude) (component)
+- **STRIDE:** Denial of service
+- **Threat:** Heavy or abusive use can run up large costs or exhaust quotas for everyone.
 - **Recommended mitigations:**
-  - `egress_control`: Outbound traffic restricted to an allow-list
-- **References:** MITRE ATT&CK T1041 Exfiltration Over C2 Channel
+  - `token_quota`: Token quotas / budgets per user or app
+  - `rate_limiting`: Rate limits per client or user
+- **References:** OWASP LLM10:2025 Unbounded Consumption
 
-### T-015 · System prompt leakage
+### T-016 · System prompt leakage
 
 **🟡 Medium** · score 6 (L3 × I2) · Open · rule `AI-11`
 
@@ -374,51 +372,50 @@ Critical and High threats that are not fully mitigated. Fix these, or document a
   - `no_secrets_in_prompts`: No secrets or authorization logic in system prompts
 - **References:** OWASP LLM07:2025 System Prompt Leakage
 
-### T-016 · Logs can be altered or disabled
+### T-017 · Sensitive data written to logs
 
-**🟡 Medium** · score 6 (L2 × I3) · Open · rule `LG-02`
+**🟡 Medium** · score 6 (L2 × I3) · Partially mitigated · rule `DA-04`
 
 - **Target:** Invocation logs (CloudWatch → SIEM) (component)
-- **STRIDE:** Repudiation
-- **Threat:** An attacker with enough access may delete logs or turn logging off to hide activity.
+- **STRIDE:** Information disclosure
+- **Threat:** Logs often capture request bodies, tokens, or AI prompts. They are usually readable by more people than the source data.
+- **Controls in place:** restricted_log_access (inherited: AWS Organization Guardrails, preventive)
+- **Without platform controls:** 🟡 Medium (score 9, open)
 - **Recommended mitigations:**
-  - `log_immutability`: Logs stored write-once in a separate account
-  - `restricted_log_access`: Log access limited to those who need it
-- **References:** MITRE ATT&CK T1562.008 Disable or Modify Cloud Logs
-
-### T-023 · Unbounded consumption and cost abuse
-
-**🟢 Low** · score 4 (L2 × I2) · Partially mitigated · rule `AI-08`
-
-- **Target:** Amazon Bedrock (Claude) (component)
-- **STRIDE:** Denial of service
-- **Threat:** Heavy or abusive use can run up large costs or exhaust quotas for everyone.
-- **Controls in place:** token_quota (inherited: Enterprise GenAI Gateway, preventive)
-- **Without platform controls:** 🟡 Medium (score 6, open)
-- **Recommended mitigations:**
-  - `rate_limiting`: Rate limits per client or user
+  - `log_redaction`: Sensitive fields redacted before logging
 - **Score adjustments:** -1 likelihood: some listed controls in place
-- **References:** OWASP LLM10:2025 Unbounded Consumption
+- **References:** OWASP Logging Cheat Sheet
+
+### T-022 · Untrusted or tampered container images
+
+**🟢 Low** · score 4 (L1 × I4) · Partially mitigated · rule `CT-02`
+
+- **Target:** Chatbot API (component)
+- **STRIDE:** Tampering
+- **Threat:** Without signing and admission checks, an attacker or mistake can deploy an image that didn't come from the approved pipeline.
+- **Controls in place:** admission_control (app team)
+- **Recommended mitigations:**
+  - `image_signing`: Container images signed and verified
+- **Score adjustments:** -1 likelihood: some listed controls in place
+- **References:** MITRE ATT&CK T1195 Supply Chain Compromise; SLSA
 
 ### Mitigated threats
 
 These threats apply to the design, and all listed controls are in place. App team controls are self-reported, so verify them (e.g. CSPM findings, config review). Inherited controls are verified through the platform's evidence.
 
-- T-017 · **Direct prompt injection and jailbreaks** on *Amazon Bedrock (Claude)* (residual Medium, controls: guardrails (inherited: Enterprise GenAI Gateway, preventive), prompt_injection_filter (inherited: Enterprise GenAI Gateway, preventive))
-- T-018 · **Container escape via privileged or root containers** on *Chatbot API* (residual Low, controls: admission_control (inherited: Shared EKS Platform, preventive), non_root (inherited: Shared EKS Platform, preventive))
-- T-019 · **Privileged / admin access without strong controls** on *Employee GenAI Assistant* (residual Low, controls: mfa (inherited: AWS Landing Zone, preventive), privileged_access_management (inherited: AWS Landing Zone, preventive))
-- T-020 · **Data store reachable from public networks** on *Amazon Bedrock (Claude)* (residual Low, controls: private_endpoint (app team))
-- T-021 · **Data store reachable from public networks** on *Policy documents (S3)* (residual Low, controls: public_access_block (inherited: AWS Landing Zone, preventive))
-- T-022 · **Data store reachable from public networks** on *Bedrock Knowledge Base* (residual Low, controls: private_endpoint (app team))
-- T-024 · **Unapproved or compromised models** on *Amazon Bedrock (Claude)* (residual Low, controls: model_allowlist (inherited: Enterprise GenAI Gateway, preventive))
-- T-025 · **Untrusted or tampered container images** on *Chatbot API* (residual Low, controls: image_signing (inherited: Shared EKS Platform, preventive), admission_control (inherited: Shared EKS Platform, preventive))
-- T-026 · **Node credential theft through the instance metadata service** on *Chatbot API* (residual Low, controls: imds_v2 (inherited: AWS Landing Zone, preventive), workload_identity (app team))
-- T-027 · **Weak or missing user authentication** on *Internal load balancer* (residual Low, controls: sso (app team), mfa (app team))
-- T-028 · **Secrets committed to code or configuration** on *GitHub Actions pipeline* (residual Low, controls: secrets_scanning (app team))
-- T-029 · **AI activity not logged for investigation** on *Amazon Bedrock (Claude)* (residual Low, controls: invocation_logging (inherited: Enterprise GenAI Gateway, preventive))
-- T-030 · **Malicious activity in running containers goes undetected** on *Chatbot API* (residual Low, controls: runtime_detection (inherited: AWS Landing Zone, preventive))
-- T-031 · **Insufficient audit logging** on *Employee GenAI Assistant* (residual Low, controls: audit_logging (inherited: AWS Landing Zone, preventive), logging_siem (app team))
-- T-032 · **Lateral movement between workloads** on *Chatbot API* (residual Low, controls: network_policy (inherited: Shared EKS Platform, preventive), segmentation (inherited: AWS Landing Zone, preventive))
+- T-018 · **Container escape via privileged or root containers** on *Chatbot API* (residual Low, controls: admission_control (app team), non_root (app team))
+- T-019 · **Data store reachable from public networks** on *Amazon Bedrock (Claude)* (residual Low, controls: private_endpoint (inherited: Private Hybrid Network, preventive))
+- T-020 · **Data store reachable from public networks** on *Policy documents (S3)* (residual Low, controls: private_endpoint (inherited: Private Hybrid Network, preventive), public_access_block (inherited: AWS Organization Guardrails, preventive))
+- T-021 · **Data store reachable from public networks** on *Bedrock Knowledge Base* (residual Low, controls: private_endpoint (inherited: Private Hybrid Network, preventive))
+- T-023 · **Unapproved or compromised models** on *Amazon Bedrock (Claude)* (residual Low, controls: model_allowlist (app team))
+- T-024 · **Weak or missing user authentication** on *Internal load balancer* (residual Low, controls: sso (app team), mfa (app team))
+- T-025 · **Uncontrolled outbound traffic enables data exfiltration** on *Chatbot API* (residual Low, controls: egress_control (inherited: Private Hybrid Network, preventive))
+- T-026 · **Secrets committed to code or configuration** on *GitHub Actions pipeline* (residual Low, controls: secrets_scanning (app team))
+- T-027 · **AI activity not logged for investigation** on *Amazon Bedrock (Claude)* (residual Low, controls: invocation_logging (app team))
+- T-028 · **Malicious activity in running containers goes undetected** on *Chatbot API* (residual Low, controls: runtime_detection (inherited: AWS Organization Guardrails, preventive))
+- T-029 · **Insufficient audit logging** on *Employee GenAI Assistant* (residual Low, controls: audit_logging (inherited: AWS Organization Guardrails, preventive), logging_siem (inherited: AWS Organization Guardrails, preventive))
+- T-030 · **Logs can be altered or disabled** on *Invocation logs (CloudWatch → SIEM)* (residual Low, controls: log_immutability (inherited: AWS Organization Guardrails, preventive), restricted_log_access (inherited: AWS Organization Guardrails, preventive))
+- T-031 · **Lateral movement between workloads** on *Chatbot API* (residual Low, controls: network_policy (app team), segmentation (inherited: AWS Organization Guardrails, preventive))
 
 ## Questions for the app team
 
@@ -429,11 +426,12 @@ These threats apply to the design, and all listed controls are in place. App tea
 **To confirm during the review:**
 
 *Amazon Bedrock (Claude)*
-- [ ] Are PII filters applied to prompts and responses?
-- [ ] Where does model output go, and is it encoded or validated first?
 - [ ] Who can add or edit documents in the knowledge base?
-- [ ] Does the system prompt contain any secrets, keys, or authorization logic?
+- [ ] Are PII filters applied to prompts and responses?
+- [ ] Which guardrails are enabled, and has the app been red-teamed?
+- [ ] Where does model output go, and is it encoded or validated first?
 - [ ] Are there per-user rate limits and token quotas?
+- [ ] Does the system prompt contain any secrets, keys, or authorization logic?
 
 *Bedrock Knowledge Base*
 - [ ] Are retrieval results filtered by the requesting user's entitlements?
@@ -447,15 +445,17 @@ These threats apply to the design, and all listed controls are in place. App tea
 - [ ] What exactly can this workload's IAM role / managed identity do?
 - [ ] Which base images are used, and does the pipeline fail on critical CVEs?
 - [ ] How does this workload authenticate to cloud services and databases?
-- [ ] Which external destinations does this workload actually need to reach?
+- [ ] Can only signed images from approved registries run?
 
 *GitHub Actions pipeline*
 - [ ] Who can merge and deploy to production? Are approvals required?
 - [ ] Is Terraform scanned in the pipeline, and can it block a deploy?
 
+*Employee GenAI Assistant*
+- [ ] Who has admin or production access, and is it just-in-time and logged?
+
 *Invocation logs (CloudWatch → SIEM)*
 - [ ] What sensitive fields can end up in logs, and who can read them?
-- [ ] Are logs stored in a separate account with write-once retention?
 
 ## Method
 

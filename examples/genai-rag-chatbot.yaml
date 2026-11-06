@@ -1,7 +1,8 @@
 # Example: internal GenAI assistant (RAG) on EKS calling Amazon Bedrock.
 # Matches the worked example in the threat modeling guide.
-# Builds on the platforms in platforms/example-baseline.yaml, so controls those platforms enforce
-# (Kyverno, Istio mTLS, the GenAI gateway's guardrails, SCPs) are inherited, not listed here:
+# Runs in the private hybrid network on top of the AWS org guardrails (platforms/example-baseline.yaml),
+# so controls those platforms enforce (RCP data perimeter, CMK encryption, VPC endpoints, egress through
+# the network perimeter, auto-enrolled security tooling) are inherited, not listed here:
 #   python -m tmtool analyze examples/genai-rag-chatbot.yaml --platforms platforms/example-baseline.yaml
 
 app:
@@ -15,7 +16,7 @@ app:
   users: [employees, admins]
   regulatory: [glba]
   controls: [sso, audit_logging, logging_siem]
-  platforms: [aws-lz]            # whole app runs in the AWS Landing Zone
+  platforms: [aws-network]       # private hybrid network, which builds on the AWS org guardrails
 
 zones:
   - id: corp
@@ -40,36 +41,34 @@ components:
   - id: chatbot-api
     name: Chatbot API
     type: container_workload
-    platform: eks                # inherits Kyverno, image scanning/signing, default-deny network policy
     zone: app-vpc
     data: [internal, confidential]
-    controls: [workload_identity]
+    controls: [admission_control, non_root, network_policy]   # cluster-level controls the team owns
 
   - id: bedrock
     name: Amazon Bedrock (Claude)
     type: llm
-    platform: genai-gateway      # inherits guardrails, prompt attack filter, quotas, invocation logging
     zone: aws-managed
     ai:
       rag: true
       agent_actions: false
       untrusted_content: false
       decision_support: false
-    controls: [private_endpoint]
+    controls: [guardrails, model_allowlist, invocation_logging]
 
   - id: knowledge-base
     name: Bedrock Knowledge Base
     type: vector_store
     zone: aws-managed
     data: [internal, confidential]
-    controls: [private_endpoint]
+    controls: [guardrails, model_allowlist, invocation_logging]
 
   - id: docs-bucket
     name: Policy documents (S3)
     type: object_storage
     zone: aws-managed
     data: [internal, confidential]
-    controls: []                 # public access block and CMK encryption come from the landing zone
+    controls: []                 # RCP data perimeter, CMK encryption, and VPC endpoints are inherited
 
   - id: logs
     name: Invocation logs (CloudWatch → SIEM)
@@ -80,7 +79,6 @@ components:
   - id: pipeline
     name: GitHub Actions pipeline
     type: ci_cd
-    platform: none               # runs in GitHub, not the landing zone: inherits nothing
     zone: corp
     controls: [branch_protection, deploy_approvals, secrets_scanning]
 

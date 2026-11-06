@@ -178,8 +178,8 @@ class InheritanceTests(unittest.TestCase):
 
     def test_baseline_example_loads(self):
         p = load_platforms([BASELINE])
-        self.assertIn("aws-lz", p)
-        self.assertEqual(p["eks"]["inherits"], ["aws-lz"])
+        self.assertIn("aws-org", p)
+        self.assertEqual(p["aws-network"]["inherits"], ["aws-org"])
 
     def test_preventive_inherited_control_mitigates(self):
         plats = platforms(("lz", [{"control": "public_access_block", "types": ["object_storage"]}]))

@@ -59,39 +59,37 @@ Four sections. See [templates/intake-template.yaml](templates/intake-template.ya
 |---|---|
 | `app` | Name, description, owner, stage, **criticality** (low/medium/high), **users** (employees, customers, partners, admins), **regulatory** scope (pci, glba, sox, nydfs, sr11-7…), app-wide **controls**, and the **platforms** the app builds on |
 | `zones` | Trust zones (internet, corporate network, app VPC, PCI segment, cloud-managed services…). Flows between zones are **trust boundary crossings** |
-| `components` | Each part of the system: `id`, `type`, `zone`, `internet_facing`, `data` classifications, `controls` the app team implements, `platform` it runs on (e.g. `eks`, or `none`), approved `exceptions` to platform controls, and for AI components an `ai` block (`rag`, `agent_actions`, `untrusted_content`, `decision_support`) |
+| `components` | Each part of the system: `id`, `type`, `zone`, `internet_facing`, `data` classifications, `controls` the app team implements, `platform` it runs on (e.g. `aws-network`, or `none`), approved `exceptions` to platform controls, and for AI components an `ai` block (`rag`, `agent_actions`, `untrusted_content`, `decision_support`) |
 | `flows` | Each data flow: `from`, `to`, `protocol`, `data`, `encrypted`, `authenticated`, flow-level `controls` |
 
 **Leave unknowns out** rather than guessing. Missing details (e.g. whether a flow is encrypted) become questions in the report.
 
 ## Inherited platform controls
 
-Many risks are already handled by the cloud platforms an app is built on: SCPs block public S3 buckets, Kyverno rejects root containers, a GenAI gateway applies guardrails to every model call. App teams shouldn't have to claim those controls themselves, and the threat model shouldn't flag them as gaps.
+Many risks are already handled by the cloud platforms an app is built on: RCPs keep data inside the org, VPC endpoints are enforced, every account is auto-enrolled in GuardDuty and the CNAPP. App teams shouldn't have to claim those controls themselves, and the threat model shouldn't flag them as gaps.
 
 The **platform baseline** ([platforms/example-baseline.yaml](platforms/example-baseline.yaml)) describes what each platform enforces. The platform or cloud security team owns it, separately from app intakes:
 
 ```yaml
 platforms:
-  - id: eks
-    name: Shared EKS Platform
-    owner: Container Platform team
-    inherits: [aws-lz]                 # also gets everything the landing zone provides
+  - id: aws-network
+    name: Private Hybrid Network
+    owner: Network / Infrastructure team
+    inherits: [aws-org]                # also gets every org-wide guardrail (SCPs, RCPs, encryption...)
     controls:
-      - control: non_root
-        types: [container_workload]    # which component types it covers (omit = all)
+      - control: private_endpoint
+        types: [database, object_storage, vector_store, queue, secrets_store, llm]   # omit = all
         enforcement: preventive        # preventive | detective
-        mechanism: Kyverno rejects privileged pods and runAsNonRoot=false
-        evidence: Kyverno policy require-run-as-nonroot
-      - control: mtls
-        applies_to: [flow]             # component (default) | flow | app
-        enforcement: preventive
-        mechanism: Istio STRICT mTLS mesh-wide
+        mechanism: VPC endpoint use enforced through shared services, with endpoint policies on data services
+        evidence: Shared services VPCE inventory
 ```
+
+Controls can also use `applies_to: [flow]` (e.g. TLS enforced in transit) or `applies_to: [app]` (e.g. federated workforce MFA, CloudTrail).
 
 How an app picks them up:
 
-- `app.platforms: [aws-lz]` applies a platform to every component the app hosts. Users, `saas`, and `external_system` components never inherit, and `platform: none` opts a component out (e.g. a GitHub-hosted pipeline).
-- A component's `platform: eks` adds that platform (and whatever it `inherits`) for that component.
+- `app.platforms: [aws-network]` applies a platform to every component the app hosts. Users, `saas`, and `external_system` components never inherit, and `platform: none` opts a component out (e.g. a GitHub-hosted pipeline).
+- A component's `platform: <id>` adds that platform (and whatever it `inherits`) for that component.
 - **Flow** controls (like mesh mTLS) apply only when both ends of the flow are on the platform. **App** controls (like JIT admin access) satisfy only app-wide rules, so workforce MFA never counts as customer MFA.
 - `exceptions: [public_access_block]` on a component removes an inherited control the app has an approved exception for.
 
@@ -100,7 +98,7 @@ How it changes the results:
 - **Preventive** inherited controls count like any other control. **Detective** ones (drift detected after the fact) reduce likelihood but can't fully mitigate a threat on their own; the report suggests making them preventive.
 - Every finding is scored **with and without** inheritance. The executive summary shows how many threats the platforms took off the board, the register marks status changes with *⬇ platform*, and a dedicated section lists each platform's controls with mechanism and evidence, ready for an auditor.
 
-The example baseline is illustrative. Replace it with your organization's actual guardrails.
+The example baseline describes AWS org guardrails (SCPs, RCPs, federated identity, permissions boundaries, auto-enrolled security tooling, protected logging) and a private hybrid network (VPC endpoints through shared services, endpoint policies). Fill in the `evidence` fields with your actual policy IDs and dashboards.
 
 ## How scoring works
 

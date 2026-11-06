@@ -39,7 +39,7 @@ components:
     internet_facing: false
     data: [internal]             # see: python -m tmtool data
     controls: [sso]              # controls the APP TEAM implements: python -m tmtool controls
-    # platform: eks              # platform this component runs on (adds to app.platforms); `none` = inherits nothing
+    # platform: aws-network      # platform this component runs on (adds to app.platforms); `none` = inherits nothing
     # exceptions: []             # approved exceptions to a platform control, e.g. [public_access_block]
 
   - id: db

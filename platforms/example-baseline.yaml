@@ -3,159 +3,140 @@
 # Owned by the platform / cloud security team, not the app team. Pass it to the tool with:
 #   python -m tmtool analyze intake.yaml --platforms platforms/example-baseline.yaml
 #
-# An app opts in by listing platforms in app.platforms (applies to the whole app) or a component's
-# `platform` field. A platform's `inherits` pulls in another platform's controls too.
+# An app opts in by listing platforms in app.platforms (applies to every component it hosts) or a
+# component's `platform` field. A platform's `inherits` pulls in another platform's controls too.
 #
 # Each control entry:
 #   control:     a control from `python -m tmtool controls`
 #   types:       component types it covers (omit = every component on the platform)
 #   applies_to:  [component] (default), flow, app. Flow entries apply when BOTH ends are on the platform.
-#                App entries satisfy app-wide rules (e.g. admin access) only.
-#   enforcement: preventive = a guardrail blocks deploying without it (SCP, admission policy, org policy)
-#                detective  = drift is detected and remediated after the fact (Config rule, CSPM alert).
+#                App entries satisfy app-wide rules (e.g. admin access, audit logging) only.
+#   enforcement: preventive = a guardrail blocks deploying without it (SCP, RCP, org policy)
+#                detective  = drift is detected and remediated after the fact (Config rule, CNAPP alert).
 #                Detective-only coverage reduces a threat but never fully mitigates it.
 #   mechanism:   how the platform enforces it
-#   evidence:    where an auditor or reviewer can verify it
+#   evidence:    where an auditor or reviewer can verify it (fill in policy IDs, dashboards, runbooks)
 #
-# THIS IS AN EXAMPLE. Replace it with your organization's real platform guardrails.
+# Deliberately NOT claimed (the app team still owns these):
+#   - least_privilege_iam: permissions boundaries cap what a workload role can ever do, but don't make
+#     the role least-privilege for the workload. Role scoping stays with the app team.
+#   - privileged_access_management: human access is federated with MFA, but just-in-time / approved prod
+#     access isn't part of the baseline. Add it here if it is.
+#   - waf, rate_limiting: perimeter controls for internet-facing apps aren't listed yet.
 
 platforms:
 
-  - id: aws-lz
-    name: AWS Landing Zone
-    owner: Cloud Platform Engineering
-    description: Multi-account AWS organization (Control Tower) with SCPs, org-wide security services, and a log archive account.
+  - id: aws-org
+    name: AWS Organization Guardrails
+    owner: Cloud Security / Cloud Platform Engineering
+    description: >
+      Organization-wide preventive guardrails (SCP allow/deny lists for services and actions, RCPs that
+      only trust our org ID and approved external IDs), federated identity, an OU structure that separates
+      workloads from security and infrastructure accounts, enforced encryption, automatic enrollment in
+      security tooling, and protected enterprise logging. Permissions boundaries are required on every
+      role a workload creates.
     controls:
+      # ---- Segmentation
       - control: segmentation
+        types: [web_app, api, api_gateway, load_balancer, container_workload, serverless_function, vm,
+                database, object_storage, queue, secrets_store, vector_store, llm, ai_agent, logging]
         enforcement: preventive
-        mechanism: Account per application and environment; prod and non-prod in separate OUs
-        evidence: AWS Organizations OU structure; account vending pipeline
-      - control: public_access_block
-        types: [object_storage]
-        enforcement: preventive
-        mechanism: Account-level S3 Block Public Access; SCP denies s3:PutAccountPublicAccessBlock
-        evidence: "SCP p-deny-s3-public; Wiz control 'S3 public access'"
-      - control: encryption_cmk
-        types: [object_storage, database, queue, vector_store]
-        enforcement: detective
-        mechanism: AWS Config conformance pack flags resources without a customer-managed KMS key; auto-ticketed
-        evidence: Config conformance pack 'data-protection'; Wiz CSPM
-      - control: imds_v2
-        types: [vm, container_workload]
-        enforcement: preventive
-        mechanism: SCP requires ec2:MetadataHttpTokens=required on RunInstances; hop limit 1 in golden AMI launch templates
-        evidence: SCP p-require-imdsv2
-      - control: runtime_detection
-        types: [vm, container_workload, serverless_function]
-        enforcement: preventive
-        mechanism: GuardDuty (incl. Runtime Monitoring) enabled org-wide by delegated admin; SCP denies disabling it
-        evidence: GuardDuty delegated admin console; SCP p-protect-security-services
-      - control: vuln_scanning
-        types: [vm, container_workload, serverless_function]
-        enforcement: detective
-        mechanism: Amazon Inspector and Wiz agentless scanning across all accounts
-        evidence: Wiz vulnerability dashboard
-      - control: model_allowlist
-        types: [llm, ai_agent]
-        enforcement: preventive
-        mechanism: SCP restricts bedrock:InvokeModel to AI-governance-approved model ARNs
-        evidence: SCP p-bedrock-approved-models; AI governance model register
-      - control: audit_logging
-        applies_to: [app]
-        enforcement: preventive
-        mechanism: Organization CloudTrail (management + data events) to the log archive account. Covers the cloud control plane, not application logs.
-        evidence: Org trail config; SCP p-protect-cloudtrail
-      - control: log_immutability
-        applies_to: [app]
-        enforcement: preventive
-        mechanism: Log archive bucket with S3 Object Lock (compliance mode) in a separate account
-        evidence: Log archive account bucket policy
-      - control: privileged_access_management
-        applies_to: [app]
-        enforcement: preventive
-        mechanism: Human prod access only through IAM Identity Center permission sets with JIT approval; IAM users denied by SCP
-        evidence: SCP p-deny-iam-users; JIT approval logs
-      - control: mfa
-        applies_to: [app]
-        enforcement: preventive
-        mechanism: IAM Identity Center requires MFA for all console and CLI sessions (workforce users, not app end users)
-        evidence: Identity Center MFA settings
+        mechanism: OU structure separates workload accounts from security and infrastructure accounts; SCPs applied per OU
+        evidence: AWS Organizations OU structure; SCP attachments per OU
 
-  - id: eks
-    name: Shared EKS Platform
-    owner: Container Platform team
-    description: Multi-tenant EKS clusters with Kyverno, Istio, and default-deny networking. Builds on the AWS Landing Zone.
-    inherits: [aws-lz]
-    controls:
-      - control: admission_control
-        types: [container_workload]
+      # ---- Data perimeter (RCPs)
+      - control: public_access_block
+        types: [object_storage, queue, secrets_store]
         enforcement: preventive
-        mechanism: Kyverno policies in Enforce mode (Pod Security 'restricted' profile plus org policies)
-        evidence: Kyverno policy reports; cluster-policies repo
-      - control: non_root
-        types: [container_workload]
+        mechanism: RCPs deny access to principals outside our org ID, except approved external IDs (covers S3, SQS, Secrets Manager, KMS, STS)
+        evidence: RCP policy IDs; approved external ID register
+
+      # ---- Encryption
+      - control: encryption_cmk
+        types: [database, object_storage, vector_store, queue, secrets_store]
         enforcement: preventive
-        mechanism: Kyverno rejects privileged pods and runAsNonRoot=false
-        evidence: Kyverno policy require-run-as-nonroot
-      - control: image_scanning
-        types: [container_workload]
-        enforcement: preventive
-        mechanism: Admission webhook blocks images with critical CVEs or no scan result
-        evidence: Kyverno policy block-critical-cves; Wiz image scanning
-      - control: image_signing
-        types: [container_workload]
-        enforcement: preventive
-        mechanism: Kyverno verifyImages requires a Cosign signature from the platform pipeline
-        evidence: Kyverno policy verify-image-signature
-      - control: network_policy
-        types: [container_workload]
-        enforcement: preventive
-        mechanism: Namespaces are created with default-deny ingress and egress NetworkPolicies
-        evidence: Namespace vending templates
-      - control: workload_identity
-        types: [container_workload]
-        enforcement: detective
-        mechanism: EKS Pod Identity is the standard; Wiz flags static AWS keys found in pods or images
-        evidence: Wiz secrets-in-workloads findings
-      - control: mtls
-        applies_to: [flow]
-        enforcement: preventive
-        mechanism: Istio STRICT mTLS PeerAuthentication mesh-wide
-        evidence: Istio mesh config
+        mechanism: Encryption at rest with customer-managed KMS keys enforced by SCP
+        evidence: SCP policy ID; Config / CNAPP encryption findings
       - control: tls
         applies_to: [flow]
         enforcement: preventive
-        mechanism: Istio STRICT mTLS (TLS 1.2+) between all in-mesh workloads
-        evidence: Istio mesh config
+        mechanism: Encryption in transit (SSL/TLS) enforced, e.g. aws:SecureTransport deny in SCPs/RCPs and resource policies
+        evidence: SCP / RCP policy IDs
 
-  - id: genai-gateway
-    name: Enterprise GenAI Gateway
-    owner: AI Platform team
-    description: Central gateway that all LLM calls go through. Applies guardrails, quotas, and logging. Builds on the AWS Landing Zone.
-    inherits: [aws-lz]
+      # ---- Workload and pipeline identity
+      - control: workload_identity
+        types: [web_app, api, container_workload, serverless_function, vm, ai_agent]
+        enforcement: preventive
+        mechanism: Workloads authenticate with IAM roles, not static keys; roles can only be created with the required permissions boundary
+        evidence: SCP requiring the permissions boundary on iam:CreateRole; IAM users / access keys denied (confirm)
+      - control: workload_identity
+        types: [ci_cd]
+        enforcement: preventive
+        mechanism: Pipeline roles assumed through OIDC federated via the IdP; no long-lived pipeline credentials
+        evidence: IAM OIDC provider config; pipeline role trust policies
+
+      # ---- Human identity
+      - control: mfa
+        applies_to: [app]
+        enforcement: preventive
+        mechanism: Human access to AWS is federated through the corporate IdP with MFA (workforce users, not app end users)
+        evidence: IdP conditional access / MFA policy; IAM Identity Center config
+
+      # ---- Security tooling (auto-enrolled)
+      - control: runtime_detection
+        types: [vm, container_workload, serverless_function]
+        enforcement: preventive
+        mechanism: Accounts auto-enrolled in GuardDuty and the CNAPP at vending; SCP prevents disabling them
+        evidence: GuardDuty delegated admin; CNAPP account coverage report
+      - control: vuln_scanning
+        types: [vm, container_workload, serverless_function]
+        enforcement: detective
+        mechanism: CNAPP scans every account automatically; findings routed to owners
+        evidence: CNAPP vulnerability dashboard
+      - control: image_scanning
+        types: [container_workload]
+        enforcement: detective
+        mechanism: CNAPP scans container images and registries (reports, does not block deploys)
+        evidence: CNAPP image scanning dashboard
+
+      # ---- Logging
+      - control: audit_logging
+        applies_to: [app]
+        enforcement: preventive
+        mechanism: CloudTrail, Config, and Security Hub auto-enabled in every account
+        evidence: Org trail and Config aggregator; Security Hub delegated admin
+      - control: logging_siem
+        applies_to: [app]
+        enforcement: preventive
+        mechanism: Enterprise logging solution ensures cloud logs are ingested into the SIEM
+        evidence: SIEM ingestion health dashboard
+      - control: log_immutability
+        types: [logging]
+        enforcement: preventive
+        mechanism: Enterprise logging infrastructure is protected by SCPs so no one outside the logging team can alter or disable it
+        evidence: SCP policy ID protecting logging resources
+      - control: restricted_log_access
+        types: [logging]
+        enforcement: preventive
+        mechanism: Logging infrastructure and log data access limited to the logging/security team
+        evidence: Log archive account access policy
+
+  - id: aws-network
+    name: Private Hybrid Network
+    owner: Network / Infrastructure team
+    description: >
+      Private VPCs connected to the hybrid network, inheriting the enterprise network perimeter. Access to
+      AWS services goes through VPC endpoints in shared services infrastructure, with endpoint policies on
+      data services. Builds on the AWS Organization Guardrails.
+    inherits: [aws-org]
     controls:
-      - control: guardrails
-        types: [llm]
+      - control: egress_control
+        types: [web_app, api, container_workload, vm, ai_agent]
         enforcement: preventive
-        mechanism: Gateway attaches the enterprise Bedrock Guardrail to every request; direct model access denied by SCP
-        evidence: Gateway config; SCP p-bedrock-gateway-only
-      - control: prompt_injection_filter
-        types: [llm]
+        mechanism: Private VPCs without direct internet egress; outbound traffic goes through the hybrid network perimeter, and VPC endpoint policies restrict AWS API calls to org-owned resources
+        evidence: Network architecture standard; perimeter firewall / proxy policy; VPCE policy IDs
+      - control: private_endpoint
+        types: [database, object_storage, vector_store, queue, secrets_store, llm]
         enforcement: preventive
-        mechanism: Bedrock Guardrails prompt attack filter set to HIGH at the gateway
-        evidence: Enterprise guardrail definition
-      - control: token_quota
-        types: [llm]
-        enforcement: preventive
-        mechanism: Per-app token budgets enforced by the gateway
-        evidence: Gateway quota config
-      - control: invocation_logging
-        types: [llm]
-        enforcement: preventive
-        mechanism: Gateway logs request metadata and content to the SIEM
-        evidence: SIEM index genai-gateway
-      - control: model_allowlist
-        types: [llm]
-        enforcement: preventive
-        mechanism: Gateway only routes to models in the AI governance register
-        evidence: Gateway model routing table
+        mechanism: VPC endpoint use enforced through shared services infrastructure, with VPC endpoint policies on data services
+        evidence: Shared services VPCE inventory; SCP/resource policy aws:SourceVpce conditions
