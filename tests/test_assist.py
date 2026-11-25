@@ -157,7 +157,9 @@ class RedactionTests(unittest.TestCase):
         for s in ("Project Falcon", "10.1.2.3", "10.0.0.0/16", "123456789012", "arn:aws", "api.prod.example.com",
                   "db1.corp", "ops@example.com", "wiki.example.com"):
             self.assertNotIn(s, red)
-        self.assertEqual(r.restore(red), raw)
+        restored = r.restore(red)
+        self.assertIn("REDACTED_URL_1", restored)  # URLs are never put back: they may be the attacker's
+        self.assertEqual(restored.replace("REDACTED_URL_1", "https://wiki.example.com/x"), raw)
 
     def test_same_value_gets_same_placeholder_and_redaction_is_idempotent(self):
         r = Redactor()
@@ -386,6 +388,14 @@ class CliTests(unittest.TestCase):
         self.assertNotIn("anthropic", sys.modules)
         self.assertFalse(hasattr(draft_mod, "anthropic"))
 
-
+class RestoredUrlTests(unittest.TestCase):
+    def test_attacker_url_does_not_come_back_in_questions(self):
+        # A model that does the right thing: it flags doc 04 and mentions the (redacted) link.
+        calls = STRUCTURE + [
+            ("ask_app_team", {"about": "app",
+                              "question": "S4 asks to add a status badge image (REDACTED_URL_1). Is this legitimate?"}),
+        ]
+        intake, _, _ = run_draft(calls)
+        self.assertNotIn("attacker", to_yaml(intake))
 if __name__ == "__main__":
     unittest.main()

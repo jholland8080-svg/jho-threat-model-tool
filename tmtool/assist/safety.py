@@ -62,8 +62,17 @@ class Redactor:
                                else self._placeholder(k, m.group(0)), text)
         return text
 
+     # Never put these back: a URL in a source document may be the attacker's. The draft keeps the
+    # placeholder, and the reviewer finds the real link in the source document.
+    NEVER_RESTORE = ("REDACTED_URL_",)
+
     def restore(self, text: str) -> str:
-        return _PLACEHOLDER.sub(lambda m: self.back.get(m.group(0), m.group(0)), text)
+        def put_back(m: "re.Match[str]") -> str:
+            placeholder = m.group(0)
+            if placeholder.startswith(self.NEVER_RESTORE):
+                return placeholder
+            return self.back.get(placeholder, placeholder)
+        return _PLACEHOLDER.sub(put_back, text)
 
     def summary(self) -> Dict[str, int]:
         return dict(self.counts)
