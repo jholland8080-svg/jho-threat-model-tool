@@ -1,0 +1,33 @@
+# Checks that run on YOUR Mac before every commit ("shift left"): a leaked secret
+# is caught before it ever reaches GitHub. Set up once with:  pre-commit install
+# Update hook versions with:  pre-commit autoupdate
+repos:
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: 2ca41cc1372d1e939a6a879f18cdc19fc1cac1ce  # frozen: v8.30.0
+    hooks:
+      - id: gitleaks              # scans staged changes for secrets
+
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: 3e8a8703264a2f4a69428a0aa4dcb512790b2c8c  # frozen: v6.0.0
+    hooks:
+      - id: detect-private-key    # SSH/PEM private keys
+      - id: check-added-large-files
+      - id: check-yaml
+      - id: check-merge-conflict
+
+  - repo: https://github.com/PyCQA/bandit
+    rev: 92ae8b82fb422a639f0ed8d99e96cea769594e08  # frozen: 1.9.4
+    hooks:
+      - id: bandit
+        args: ["--severity-level", "medium", "--confidence-level", "medium"]
+        files: ^tmtool/
+
+  # Defense in depth: .gitignore already excludes these, but `git add -f` bypasses
+  # .gitignore. This hook refuses the commit if any private file is staged anyway.
+  - repo: local
+    hooks:
+      - id: block-private-files
+        name: Block personal data and settings
+        language: fail
+        entry: "Private file staged. These must never be committed:"
+        files: '(^local/|(^|/)\.env$|^reports/)'

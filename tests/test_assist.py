@@ -184,9 +184,9 @@ class RedactionTests(unittest.TestCase):
 class HiddenContentTests(unittest.TestCase):
     def test_hidden_html_and_invisible_characters_are_removed(self):
         raw = ('<p>shown</p><!-- secret instruction --><div style="display:none">hidden one</div>'
-               '<span hidden>hidden two</span>zero​width')
+               '<span hidden>hidden two</span>zero\u200bwidth')
         visible, notes = strip_hidden(raw)
-        for s in ("secret instruction", "hidden one", "hidden two", "​"):
+        for s in ("secret instruction", "hidden one", "hidden two", "\u200b"):
             self.assertNotIn(s, visible)
         self.assertEqual(len(notes), 3)  # comment, hidden elements (2), zero-width
 

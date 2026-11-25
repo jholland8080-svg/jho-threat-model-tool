@@ -80,8 +80,8 @@ class Redactor:
 
 # ------------------------------------------------------------------------------------- hidden content
 
-_ZERO_WIDTH = re.compile("[​‌‍⁠﻿­]")
-_BIDI = re.compile("[‪-‮⁦-⁩]")
+_ZERO_WIDTH = re.compile("[\u200b\u200c\u200d\u2060\ufeff\u00ad]")
+_BIDI = re.compile("[\u202a-\u202e\u2066-\u2069]")
 _HTML_COMMENT = re.compile(r"<!--.*?-->", re.S)
 _MD_COMMENT = re.compile(r"^\s*\[(?://|comment)\]:\s*(?:#|<>)\s*\(.*?\)\s*$", re.M | re.I)
 _HIDDEN_ELEMENT = re.compile(
