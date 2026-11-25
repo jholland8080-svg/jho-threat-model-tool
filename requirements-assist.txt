@@ -2,7 +2,7 @@
 # Install with: pip install -r requirements.txt -r requirements-assist.txt
 # Full dependency tree pinned (from pip freeze). Dependabot proposes updates.
 annotated-types==0.8.0
-anthropic==2.9.0
+anthropic==2.12.0
 anyio==4.16.0
 docstring_parser==0.18.0
 h11==0.16.0
