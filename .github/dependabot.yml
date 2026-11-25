@@ -1,0 +1,18 @@
+# Dependabot opens a pull request when a dependency has an update or a security fix.
+# Each PR runs through the security pipeline before you merge it.
+version: 2
+updates:
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    labels: ["dependencies", "security"]
+
+  - package-ecosystem: "github-actions"   # keeps the workflow's actions up to date too
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    labels: ["dependencies", "security"]

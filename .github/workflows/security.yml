@@ -1,0 +1,126 @@
+# Security pipeline: runs on every push and pull request, plus weekly so newly
+# published vulnerabilities in your dependencies get caught even when you're not coding.
+name: security
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "17 13 * * 1"   # Mondays 13:17 UTC (7:17am Central)
+  workflow_dispatch:         # lets you run it by hand from the Actions tab
+
+# Least privilege for the automatic GITHUB_TOKEN: read-only unless a job asks for more.
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    name: Unit tests (incl. security tests)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false   # don't leave the token in .git/config for later steps
+      # Uses the runner's built-in Python instead of a setup action: one less third-party dependency.
+      - name: Install dependencies (pinned)
+        run: python3 -m venv .ci && .ci/bin/pip install --quiet -r requirements.txt
+      - name: Run tests (no API calls, no real accounts)
+        run: .ci/bin/python -m unittest discover -s tests -v
+      - name: Example threat models
+        run: |
+          .ci/bin/python -m tmtool analyze examples/genai-rag-chatbot.yaml --platforms platforms/example-baseline.yaml
+          .ci/bin/python -m tmtool analyze examples/ivr-bedrock-pci.yaml
+
+  secrets:
+    name: Secret scan (gitleaks)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: read   # gitleaks reads the list of commits in a PR
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0               # scan the full history, not just the latest commit
+          persist-credentials: false
+      - uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_ENABLE_COMMENTS: "false"   # report in the job log; no write access needed
+          # No GITLEAKS_LICENSE needed: free for repos owned by a personal account.
+
+  sast:
+    name: Code scan (bandit)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Install bandit
+        run: python3 -m venv .ci && .ci/bin/pip install --quiet -r requirements-dev.txt
+      # Show every finding in the log, but only fail the build on medium/high severity.
+      - name: Report all findings
+        run: .ci/bin/bandit -r tmtool || true
+      - name: Fail on medium+ severity
+        run: .ci/bin/bandit -r tmtool --severity-level medium --confidence-level medium
+
+  dependencies:
+    name: Dependency vulnerabilities (pip-audit)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Install pip-audit
+        run: python3 -m venv .ci && .ci/bin/pip install --quiet -r requirements-dev.txt
+      - name: Check pinned packages against known vulnerabilities
+        run: .ci/bin/pip-audit -r requirements.txt -r requirements-assist.txt
+
+      # SBOM: a standard inventory (CycloneDX) of every package and version this agent depends on.
+      # Runs even if the audit above fails, so you always get the inventory.
+      - name: Generate SBOM (CycloneDX)
+        if: always()
+        run: .ci/bin/pip-audit -r requirements.txt -r requirements-assist.txt --format cyclonedx-json --output sbom.cdx.json || true
+      - name: Save SBOM with this run
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: sbom-cyclonedx
+          path: sbom.cdx.json
+          if-no-files-found: error   # fail loudly if the SBOM wasn't produced
+          retention-days: 90
+
+  private-files:
+    name: Private files check
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0               # full history, so past commits are checked too
+          persist-credentials: false
+      # Same paths the pre-commit blocker refuses. This copy can't be skipped with --no-verify.
+      - name: Fail if personal-data files are in the repo now
+        run: |
+          PATTERN='(^local/|(^|/)\.env$|^reports/)'
+          found=$(git ls-files | grep -E "$PATTERN" || true)
+          if [ -n "$found" ]; then
+            echo "::error::Personal-data files are committed to this repo:"
+            echo "$found"
+            exit 1
+          fi
+          echo "No personal-data files in the current code."
+      - name: Fail if personal-data files were EVER committed (history)
+        run: |
+          PATTERN='(^local/|(^|/)\.env$|^reports/)'
+          found=$(git log --all --name-only --format= | sort -u | grep -E "$PATTERN" || true)
+          if [ -n "$found" ]; then
+            echo "::error::These personal-data files appear in the repo's history (deleting them later doesn't remove them):"
+            echo "$found"
+            exit 1
+          fi
+          echo "No personal-data files anywhere in history."
