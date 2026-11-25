@@ -1,0 +1,4 @@
+# Dev and security-pipeline tools, pinned. Dependabot proposes updates.
+bandit==1.9.4
+pip_audit==2.10.1
+pre_commit==4.7.0

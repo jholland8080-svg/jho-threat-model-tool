@@ -1,0 +1,166 @@
+# tmtool's own threat model: the agent-assisted `tmtool draft` command.
+# The tool modeling itself. Reviewed by hand (not generated). See docs/SECURITY.md.
+#   python -m tmtool analyze examples/tmtool-draft-agent.yaml -o docs/tmtool-threat-model.md
+
+app:
+  name: tmtool draft (agent-assisted intake drafting)
+  description: >
+    A security reviewer runs tmtool on their laptop. `tmtool draft` sends cleaned, redacted design documents
+    to Claude, which proposes an intake through a small set of tools. Code checks every tool call and writes
+    the draft. A person reviews it before `tmtool analyze` scores it.
+  owner: Jay Holland
+  stage: build
+  criticality: high              # its output informs go-live decisions; a wrong model hides real risk
+  users: [employees]
+  regulatory: []
+  controls:
+    - no_secrets_in_prompts      # the system prompt holds no secrets or authorization logic
+    - human_review               # drafts are unreviewed until a person sets draft.status: reviewed
+
+zones:
+  - id: laptop
+    name: Reviewer's laptop
+    description: Where tmtool runs, credentials live and drafts are written
+  - id: app-teams
+    name: App teams (document authors)
+    description: Anyone who can write or edit a design document; untrusted
+  - id: vendor
+    name: Model provider
+    description: Anthropic API today; Bedrock in the company's AWS account for corporate use
+  - id: supply-chain
+    name: Code hosting and package registry
+    description: GitHub (source, CI) and PyPI (dependencies)
+
+components:
+  - id: reviewer
+    name: Security reviewer
+    type: user
+    zone: laptop
+
+  - id: design-docs
+    name: Design documents
+    type: external_system
+    zone: app-teams
+    data: [confidential]
+    notes: Untrusted. Can contain hidden text or instructions aimed at the AI (see the injection lab).
+
+  - id: draft-agent
+    name: tmtool draft (agent loop and code checks)
+    type: ai_agent
+    zone: laptop
+    internet_facing: false
+    data: [confidential]
+    ai:
+      rag: false
+      agent_actions: true        # tools add to the draft (append-only); no file, shell or network tools
+      untrusted_content: true    # reads documents written by others
+      decision_support: true     # the threat model informs go-live decisions
+    controls:
+      - least_privilege_tools    # six recording tools plus one flag tool; nothing deletes or overwrites
+      - tool_allowlist           # tools are fixed in code; no MCP servers or plugins
+      - human_approval           # risk-lowering claims are proposals until a person applies them
+      - output_validation        # vocabulary, ids and quotes checked by code; all model text sanitized
+      - input_validation         # source types, sizes and symlinks checked; hidden content stripped
+      - prompt_injection_filter  # instruction-like text detected by code and shown to the reviewer
+      - data_minimization        # IPs, account IDs, ARNs, hostnames, emails and URLs redacted before sending
+      - token_quota              # --max-steps caps model round trips per run
+
+  - id: claude
+    name: Claude (Anthropic API)
+    type: llm
+    zone: vendor
+    data: [confidential]
+    ai:
+      rag: false
+      agent_actions: true
+      untrusted_content: true
+      decision_support: true
+    controls:
+      - no_secrets_in_prompts
+      - human_review
+
+  - id: credential
+    name: Short-lived Claude token (ant auth)
+    type: secrets_store
+    zone: laptop
+    data: [credentials]
+    controls:
+      - secrets_manager          # fetched from `ant auth` each run; no API key on disk
+
+  - id: drafts
+    name: Draft intakes (local/)
+    type: object_storage
+    zone: laptop
+    data: [confidential]
+    controls:
+      - public_access_block      # local files only, written owner-only (0600)
+      - restricted_log_access
+    notes: local/ is git-ignored and blocked by pre-commit and CI checks.
+
+  - id: repo-ci
+    name: GitHub repository and Actions
+    type: ci_cd
+    zone: supply-chain
+    controls:
+      - secrets_scanning         # gitleaks in pre-commit and CI (full history)
+      - vuln_scanning            # pip-audit; Dependabot weekly
+      - iac_scanning             # bandit on the code (closest vocabulary match)
+    notes: Actions pinned to commit SHAs, read-only token, not persisted, job timeouts.
+
+  - id: pypi
+    name: PyPI (Python packages)
+    type: external_system
+    zone: supply-chain
+    notes: Full dependency tree pinned; no hash pinning yet (see decision record 0001).
+
+flows:
+  - id: F1
+    from: reviewer
+    to: draft-agent
+    protocol: CLI
+    data: [confidential]
+    encrypted: true
+    authenticated: true
+
+  - id: F2
+    from: design-docs
+    to: draft-agent
+    protocol: Local files
+    description: Untrusted content enters here
+    data: [confidential]
+    encrypted: false
+    authenticated: false
+
+  - id: F3
+    from: credential
+    to: draft-agent
+    protocol: ant CLI subprocess
+    data: [credentials]
+    encrypted: true
+    authenticated: true
+
+  - id: F4
+    from: draft-agent
+    to: claude
+    protocol: HTTPS
+    description: Cleaned, redacted documents and tool results
+    data: [confidential]
+    encrypted: true
+    authenticated: true
+    controls: [tls]
+
+  - id: F5
+    from: draft-agent
+    to: drafts
+    protocol: Local file write
+    data: [confidential]
+    encrypted: false
+    authenticated: true
+
+  - id: F6
+    from: pypi
+    to: repo-ci
+    protocol: HTTPS (pip)
+    description: Pinned dependencies installed in CI and on the laptop
+    encrypted: true
+    authenticated: false

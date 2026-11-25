@@ -6,6 +6,7 @@ import argparse
 import os
 import shutil
 import sys
+from datetime import datetime
 from typing import List, Optional
 
 from . import __version__, vocab
@@ -96,6 +97,66 @@ def cmd_init(args: argparse.Namespace) -> int:
     return 0
 
 
+DEFAULT_TERMS = os.path.join("local", "redact-terms.txt")
+
+
+def _read_terms(path: Optional[str]) -> List[str]:
+    path = path or (DEFAULT_TERMS if os.path.exists(DEFAULT_TERMS) else None)
+    if not path:
+        return []
+    with open(path, encoding="utf-8") as fh:
+        return [line.strip() for line in fh if line.strip() and not line.startswith("#")]
+
+
+def cmd_draft(args: argparse.Namespace) -> int:
+    # Imported here so the core tool never needs the assist dependencies.
+    from .assist.client import AssistError, make_client, model_name
+    from .assist.draft import draft_intake, preview_redacted, to_yaml
+    from .assist.sources import SourceError
+
+    try:
+        terms = _read_terms(args.redact_terms)
+        if args.show_redacted:
+            print(preview_redacted(args.sources, terms))
+            return 0
+        output = args.output or os.path.join(
+            "local", "intakes", f"draft-{datetime.now().strftime('%Y%m%d-%H%M')}.yaml")
+        if os.path.exists(output) and not args.force:
+            print(f"{output} already exists (use --force to overwrite)", file=sys.stderr)
+            return 1
+        client = make_client(args.provider)
+        model = model_name(args.model)
+        print(f"Drafting an intake with {model}. Only redacted text is sent; the model can't write files.")
+        intake, summary, redactions = draft_intake(args.sources, client, model, terms, args.verbose, args.max_steps)
+    except (AssistError, SourceError) as exc:
+        print(exc, file=sys.stderr)
+        return 1
+
+    os.makedirs(os.path.dirname(output) or ".", exist_ok=True)
+    fd = os.open(output, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)  # owner-only: it describes your system
+    with os.fdopen(fd, "w") as fh:
+        fh.write(to_yaml(intake))
+
+    n_prop = sum(len(h.get("proposed_controls", [])) + len(h.get("proposed_values", []))
+                 for h in [intake["app"]] + intake["components"] + intake["flows"])
+    print(f"\nDraft written to {output}")
+    print(f"  {len(intake['components'])} components, {len(intake['flows'])} flows, "
+          f"{n_prop} proposals (not credited), {len(intake['open_questions'])} open questions")
+    if redactions:
+        print("  redacted before sending: " + ", ".join(f"{v} {k.lower()}" for k, v in sorted(redactions.items())))
+    notes = intake["draft"]["review_notes"]
+    if notes:
+        print(f"  {len(notes)} review note(s) — read these first:")
+        for n in notes:
+            print(f"    - {n}")
+    print(f"\nAssistant summary (model-written, for context only):\n  {summary}")
+    if not os.path.abspath(output).startswith(os.path.abspath("local") + os.sep):
+        print("\nwarning: the draft is outside local/, which is git-ignored. Don't commit real architectures.",
+              file=sys.stderr)
+    print(f"\nNext: review it, then  python -m tmtool validate {output}")
+    return 0
+
+
 def cmd_rules(args: argparse.Namespace) -> int:
     for r in load_library(_libraries(args.library)):
         target = r["applies_to"] + (f" ({', '.join(r['types'])})" if r.get("types") else "")
@@ -150,6 +211,20 @@ def build_parser() -> argparse.ArgumentParser:
     i.add_argument("path", nargs="?", default="intake.yaml")
     i.add_argument("--force", action="store_true")
     i.set_defaults(func=cmd_init)
+
+    d = sub.add_parser("draft", help="Agent-assisted: draft an intake from architecture documents (needs Claude)")
+    d.add_argument("sources", nargs="+", help="Text documents or folders (.md, .txt, .html, .yaml, .mmd, ...)")
+    d.add_argument("-o", "--output", help="Draft path (default: local/intakes/draft-<time>.yaml)")
+    d.add_argument("--force", action="store_true", help="Overwrite the output file")
+    d.add_argument("--show-redacted", action="store_true",
+                   help="Print exactly what would be sent, after cleaning and redaction, and exit (no API call)")
+    d.add_argument("--redact-terms", help="File of extra terms to redact, one per line "
+                   "(default: local/redact-terms.txt if it exists)")
+    d.add_argument("--provider", choices=("anthropic", "bedrock"), help="Default: $TMTOOL_PROVIDER or anthropic")
+    d.add_argument("--model", help="Default: $TMTOOL_MODEL or the built-in default")
+    d.add_argument("--max-steps", type=int, default=60, help="Cap on model round trips (cost control)")
+    d.add_argument("-v", "--verbose", action="store_true", help="Show every tool result")
+    d.set_defaults(func=cmd_draft)
 
     r = sub.add_parser("rules", help="List the threat rules")
     r.add_argument("--library", action="append")

@@ -153,6 +153,19 @@ def normalize_intake(raw: Dict[str, Any]) -> Tuple[Dict[str, Any], List[str]]:
         check_data(f"flow '{flow['id']}'", flow["data"])
         check_controls(f"flow '{flow['id']}'", flow["controls"])
 
+    # Drafts from `tmtool draft`: make it impossible to miss that a person hasn't reviewed this yet.
+    draft = raw.get("draft")
+    if isinstance(draft, dict) and str(draft.get("status", "")).lower() != "reviewed":
+        warnings.append("this intake is an UNREVIEWED DRAFT from `tmtool draft`: review it before relying on results")
+    holders = [app_raw] + [x for x in _as_list(raw.get("components")) + _as_list(raw.get("flows")) if isinstance(x, dict)]
+    proposed = sum(len(_as_list(h.get("proposed_controls"))) + len(_as_list(h.get("proposed_values"))) for h in holders)
+    if proposed:
+        warnings.append(f"{proposed} proposal(s) (proposed_controls / proposed_values) are not credited until "
+                        "a person reviews and applies them")
+    questions = _as_list(raw.get("open_questions"))
+    if questions:
+        warnings.append(f"{len(questions)} open question(s) from drafting are unanswered (see open_questions)")
+
     if errors:
         raise IntakeError("Intake file has errors:\n  - " + "\n  - ".join(errors))
 
